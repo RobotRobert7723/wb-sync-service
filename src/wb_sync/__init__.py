@@ -1,0 +1,1 @@
+"""WB PostgreSQL sync service."""

@@ -1,0 +1,9 @@
+services:
+  wb-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wb-sync
+    env_file:
+      - ./deploy/.env.production
+    restart: unless-stopped
