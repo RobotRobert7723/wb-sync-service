@@ -234,4 +234,110 @@ create table if not exists {schema}.wb_finance_sales_report_details (
 
 create index if not exists wb_finance_sales_report_details_account_rrd_idx
     on {schema}.wb_finance_sales_report_details (account_id, rrd_id desc);
+
+create or replace view {schema}.wb_finance_weekly_summary as
+with localized as (
+    select
+        d.account_id,
+        a.account_code,
+        a.account_name,
+        d.report_id,
+        d.currency,
+        d.report_type,
+        (d.date_from at time zone 'Europe/Moscow')::date as local_date_from,
+        (d.date_to at time zone 'Europe/Moscow')::date as local_date_to,
+        (d.create_date at time zone 'Europe/Moscow')::date as local_create_date,
+        d.seller_oper_name,
+        d.retail_price,
+        d.retail_amount,
+        d.retail_price_with_disc,
+        d.for_pay,
+        d.delivery_service,
+        d.paid_storage,
+        d.deduction,
+        d.additional_payment,
+        d.paid_acceptance,
+        d.penalty,
+        d.cashback_amount,
+        d.cashback_discount,
+        d.cashback_commission_change,
+        d.rebill_logistic_cost
+    from {schema}.wb_finance_sales_report_details d
+    join {schema}.wb_accounts a on a.id = d.account_id
+),
+bucketed as (
+    select
+        *,
+        date_trunc('week', local_date_from::timestamp)::date as week_start
+    from localized
+)
+select
+    account_id,
+    account_code,
+    account_name as legal_entity_name,
+    week_start,
+    min(local_date_from) as period_from,
+    max(local_date_to) as period_to,
+    max(local_create_date) as report_created_date,
+    case max(report_type)
+        when 1 then 'Основной'
+        else max(report_type)::text
+    end as report_type_name,
+    currency,
+    string_agg(distinct report_id::text, ',' order by report_id::text) as source_report_ids,
+    coalesce(sum(retail_amount) filter (where seller_oper_name = 'Продажа'), 0)
+      - coalesce(sum(retail_amount) filter (where seller_oper_name = 'Возврат'), 0) as sale_amount,
+    coalesce(sum(cashback_amount), 0) as loyalty_discount_compensation,
+    coalesce(sum(for_pay) filter (where seller_oper_name = 'Продажа'), 0)
+      - coalesce(sum(for_pay) filter (where seller_oper_name = 'Возврат'), 0) as to_transfer_for_goods,
+    case
+        when
+            (coalesce(sum(retail_price) filter (where seller_oper_name = 'Продажа'), 0)
+             - coalesce(sum(retail_price) filter (where seller_oper_name = 'Возврат'), 0)) = 0
+        then 0::numeric(18, 2)
+        else round(
+            (
+                1 - (
+                    (coalesce(sum(retail_price_with_disc) filter (where seller_oper_name = 'Продажа'), 0)
+                     - coalesce(sum(retail_price_with_disc) filter (where seller_oper_name = 'Возврат'), 0))
+                    /
+                    nullif(
+                        coalesce(sum(retail_price) filter (where seller_oper_name = 'Продажа'), 0)
+                        - coalesce(sum(retail_price) filter (where seller_oper_name = 'Возврат'), 0),
+                        0
+                    )
+                )
+            ) * 100,
+            2
+        )
+    end as agreed_discount_percent,
+    coalesce(sum(delivery_service), 0) as logistics_cost,
+    coalesce(sum(paid_storage), 0) as storage_cost,
+    coalesce(sum(paid_acceptance), 0) as acceptance_cost,
+    coalesce(sum(deduction), 0) as other_deductions_payouts,
+    coalesce(sum(penalty), 0) as penalties_total,
+    coalesce(sum(additional_payment), 0) + coalesce(sum(rebill_logistic_cost), 0) as wb_reward_adjustment,
+    coalesce(sum(cashback_discount), 0) as loyalty_program_cost,
+    coalesce(sum(cashback_commission_change), 0) as loyalty_points_withheld,
+    (
+        coalesce(sum(for_pay) filter (where seller_oper_name = 'Продажа'), 0)
+        - coalesce(sum(for_pay) filter (where seller_oper_name = 'Возврат'), 0)
+        - coalesce(sum(delivery_service), 0)
+        - coalesce(sum(paid_storage), 0)
+        - coalesce(sum(paid_acceptance), 0)
+        - coalesce(sum(deduction), 0)
+        - coalesce(sum(penalty), 0)
+        - coalesce(sum(cashback_discount), 0)
+        - coalesce(sum(cashback_commission_change), 0)
+        + coalesce(sum(cashback_amount), 0)
+        + coalesce(sum(additional_payment), 0)
+        + coalesce(sum(rebill_logistic_cost), 0)
+    ) as total_to_pay
+from bucketed
+group by
+    account_id,
+    account_code,
+    account_name,
+    week_start,
+    currency;
 """
