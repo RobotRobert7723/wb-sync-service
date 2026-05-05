@@ -235,6 +235,8 @@ create table if not exists {schema}.wb_finance_sales_report_details (
 create index if not exists wb_finance_sales_report_details_account_rrd_idx
     on {schema}.wb_finance_sales_report_details (account_id, rrd_id desc);
 
+drop view if exists {schema}.wb_finance_weekly_summary;
+
 create or replace view {schema}.wb_finance_weekly_summary as
 with localized as (
     select
@@ -264,18 +266,13 @@ with localized as (
         d.rebill_logistic_cost
     from {schema}.wb_finance_sales_report_details d
     join {schema}.wb_accounts a on a.id = d.account_id
-),
-bucketed as (
-    select
-        *,
-        date_trunc('week', local_date_from::timestamp)::date as week_start
-    from localized
 )
 select
     account_id,
     account_code,
     account_name as legal_entity_name,
-    week_start,
+    report_id,
+    date_trunc('week', min(local_date_from)::timestamp)::date as week_start,
     min(local_date_from) as period_from,
     max(local_date_to) as period_to,
     max(local_create_date) as report_created_date,
@@ -284,7 +281,6 @@ select
         else max(report_type)::text
     end as report_type_name,
     currency,
-    string_agg(distinct report_id::text, ',' order by report_id::text) as source_report_ids,
     coalesce(sum(retail_amount) filter (where seller_oper_name = 'Продажа'), 0)
       - coalesce(sum(retail_amount) filter (where seller_oper_name = 'Возврат'), 0) as sale_amount,
     coalesce(sum(cashback_amount), 0) as loyalty_discount_compensation,
@@ -333,11 +329,11 @@ select
         + coalesce(sum(additional_payment), 0)
         + coalesce(sum(rebill_logistic_cost), 0)
     ) as total_to_pay
-from bucketed
+from localized
 group by
     account_id,
     account_code,
     account_name,
-    week_start,
+    report_id,
     currency;
 """
