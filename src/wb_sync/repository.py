@@ -19,6 +19,12 @@ def _to_decimal(value: object) -> Decimal | None:
     return Decimal(str(value))
 
 
+def _none_if_empty(value: object) -> object | None:
+    if value == "":
+        return None
+    return value
+
+
 class SyncRepository:
     def __init__(self, db: Database):
         self.db = db
@@ -353,14 +359,14 @@ class SyncRepository:
             "report_id": row.get("reportId"),
             "rrd_id": row.get("rrdId"),
             "date_from": row.get("dateFrom"),
-            "date_to": row.get("dateTo"),
-            "create_date": row.get("createDate"),
+            "date_to": _none_if_empty(row.get("dateTo")),
+            "create_date": _none_if_empty(row.get("createDate")),
             "currency": row.get("currency"),
             "report_type": row.get("reportType"),
             "gi_id": row.get("giId"),
             "dlv_prc": _to_decimal(row.get("dlvPrc")),
-            "fix_tariff_date_from": row.get("fixTariffDateFrom"),
-            "fix_tariff_date_to": row.get("fixTariffDateTo"),
+            "fix_tariff_date_from": _none_if_empty(row.get("fixTariffDateFrom")),
+            "fix_tariff_date_to": _none_if_empty(row.get("fixTariffDateTo")),
             "subject_name": row.get("subjectName"),
             "nm_id": row.get("nmId"),
             "brand_name": row.get("brandName"),
@@ -376,9 +382,9 @@ class SyncRepository:
             "commission_percent": _to_decimal(row.get("commissionPercent")),
             "office_name": row.get("officeName"),
             "seller_oper_name": row.get("sellerOperName"),
-            "order_dt": row.get("orderDt"),
-            "sale_dt": row.get("saleDt"),
-            "rr_date": row.get("rrDate"),
+            "order_dt": _none_if_empty(row.get("orderDt")),
+            "sale_dt": _none_if_empty(row.get("saleDt")),
+            "rr_date": _none_if_empty(row.get("rrDate")),
             "shk_id": row.get("shkId"),
             "retail_price_with_disc": _to_decimal(row.get("retailPriceWithDisc")),
             "delivery_amount": _to_decimal(row.get("deliveryAmount")),

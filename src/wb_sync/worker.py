@@ -52,6 +52,20 @@ class SyncWorker:
             return self.repository.upsert_sales
         return self.repository.upsert_finance_sales_report_details
 
+    def _limited_stats_fetcher(self):
+        def _fetch(api_type, token, date_from, stop_event):
+            self.rate_limiter.wait(self.stop_event)
+            return self.api_client.fetch_rows(api_type, token, date_from, stop_event)
+
+        return _fetch
+
+    def _limited_finance_fetcher(self):
+        def _fetch(token, date_from, date_to, rrd_id, stop_event, limit=100000):
+            self.rate_limiter.wait(self.stop_event)
+            return self.api_client.fetch_finance_sales_report_details(token, date_from, date_to, rrd_id, stop_event, limit=limit)
+
+        return _fetch
+
     def _run(self) -> None:
         while not self.stop_event.is_set():
             run_id = str(uuid.uuid4())
@@ -65,7 +79,6 @@ class SyncWorker:
             try:
                 self.repository.mark_run_started(self.worker_config.account_id, self.worker_config.api_type, run_id)
                 state = self.repository.get_state(self.worker_config.account_id, self.worker_config.api_type)
-                self.rate_limiter.wait(self.stop_event)
                 if self.stop_event.is_set():
                     self.repository.mark_run_interrupted(
                         self.worker_config.account_id,
@@ -78,7 +91,7 @@ class SyncWorker:
                         worker=self.worker_config,
                         state=state,
                         stop_event=self.stop_event,
-                        fetch_rows=self.api_client.fetch_finance_sales_report_details,
+                        fetch_rows=self._limited_finance_fetcher(),
                         write_rows=self._writer(),
                     )
                 else:
@@ -86,7 +99,7 @@ class SyncWorker:
                         worker=self.worker_config,
                         state=state,
                         stop_event=self.stop_event,
-                        fetch_rows=self.api_client.fetch_rows,
+                        fetch_rows=self._limited_stats_fetcher(),
                         write_rows=self._writer(),
                         key_builder=self._row_key,
                     )
