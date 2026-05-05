@@ -103,6 +103,29 @@ class SyncRepository:
             )
             conn.commit()
 
+    def checkpoint_run_progress(
+        self,
+        account_id: int,
+        api_type: str,
+        run_id: str,
+        cursor_timestamp: datetime | None,
+        cursor_key: str | None,
+    ) -> None:
+        with self.db.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                update wb_sync_state
+                set heartbeat_at = %s,
+                    run_id = %s,
+                    status = 'running',
+                    cursor_timestamp = %s,
+                    cursor_key = %s
+                where account_id = %s and api_type = %s
+                """,
+                (utcnow(), run_id, cursor_timestamp, cursor_key, account_id, api_type),
+            )
+            conn.commit()
+
     def mark_run_success(
         self,
         account_id: int,

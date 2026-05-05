@@ -30,6 +30,10 @@ class FinanceFetcher(Protocol):
     ) -> list[dict[str, object]] | None: ...
 
 
+class ProgressCheckpoint(Protocol):
+    def __call__(self, cursor_timestamp: datetime | None, cursor_key: str | None) -> None: ...
+
+
 @dataclass(slots=True)
 class PageProgress:
     rows: list[dict[str, object]]
@@ -124,35 +128,35 @@ def run_finance_sales_report_sync(
     stop_event: object,
     fetch_rows: FinanceFetcher,
     write_rows: Writer,
+    checkpoint_progress: ProgressCheckpoint | None = None,
 ) -> FinanceSyncResult:
     token = resolve_token(worker.token_env_var)
-    cursor_ts, _ = initial_cursor(worker, state)
+    cursor_ts, cursor_key = initial_cursor(worker, state)
     current_day = cursor_ts.astimezone(MOSCOW_TZ).date()
     today_msk = moscow_now().date()
     rows_written = 0
+    start_rrd_id = int(cursor_key) if cursor_key else 0
 
-    day = current_day
-    while day <= today_msk:
-        if getattr(stop_event, "is_set", lambda: False)():
-            raise RuntimeError("worker stopped before finance request")
+    if getattr(stop_event, "is_set", lambda: False)():
+        raise RuntimeError("worker stopped before finance request")
 
-        day_start = datetime(day.year, day.month, day.day, tzinfo=MOSCOW_TZ)
-        day_end = day_start + timedelta(days=1) - timedelta(seconds=1)
-        date_from = day_start.isoformat(timespec="seconds")
-        date_to = day_end.isoformat(timespec="seconds")
-        rrd_id = 0
+    period_start = datetime(current_day.year, current_day.month, current_day.day, tzinfo=MOSCOW_TZ)
+    period_end = datetime(today_msk.year, today_msk.month, today_msk.day, tzinfo=MOSCOW_TZ) + timedelta(days=1) - timedelta(seconds=1)
+    date_from = period_start.isoformat(timespec="seconds")
+    date_to = period_end.isoformat(timespec="seconds")
+    rrd_id = start_rrd_id
 
-        while True:
-            payload = fetch_rows(token, date_from, date_to, rrd_id, stop_event, limit=min(worker.batch_limit, 100000))
-            if not payload:
-                break
-            rows_written += write_rows(worker.account_id, payload)
-            last_rrd_id = payload[-1].get("rrdId")
-            if last_rrd_id is None:
-                break
-            rrd_id = int(last_rrd_id)
-
-        day += timedelta(days=1)
+    while True:
+        payload = fetch_rows(token, date_from, date_to, rrd_id, stop_event, limit=min(worker.batch_limit, 100000))
+        if not payload:
+            break
+        rows_written += write_rows(worker.account_id, payload)
+        last_rrd_id = payload[-1].get("rrdId")
+        if last_rrd_id is None:
+            break
+        rrd_id = int(last_rrd_id)
+        if checkpoint_progress is not None:
+            checkpoint_progress(cursor_ts, str(rrd_id))
 
     cursor_day = today_msk
     cursor_timestamp = datetime(cursor_day.year, cursor_day.month, cursor_day.day, tzinfo=MOSCOW_TZ).astimezone(UTC)

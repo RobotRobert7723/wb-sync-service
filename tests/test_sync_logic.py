@@ -98,26 +98,23 @@ def test_run_incremental_sync_raises_on_stuck_cursor(monkeypatch):
         )
 
 
-def test_run_finance_sales_report_sync_processes_days(monkeypatch):
+def test_run_finance_sales_report_sync_pages_full_period(monkeypatch):
     monkeypatch.setenv("WB_TOKEN_1", "secret")
     monkeypatch.setattr("wb_sync.sync_logic.moscow_now", lambda: datetime(2026, 5, 5, 12, 0, tzinfo=UTC) + timedelta(hours=3))
 
     calls = []
     written = []
+    checkpoints = []
 
     def fetch_rows(token, date_from, date_to, rrd_id, stop_event, limit=100000):
         calls.append((date_from, date_to, rrd_id))
-        if date_from.startswith("2026-05-03") and rrd_id == 0:
+        if rrd_id == 0:
             return [
                 {"reportId": 10, "rrdId": 1, "dateFrom": date_from},
                 {"reportId": 10, "rrdId": 2, "dateFrom": date_from},
             ]
-        if date_from.startswith("2026-05-03") and rrd_id == 2:
-            return None
-        if date_from.startswith("2026-05-04") and rrd_id == 0:
+        if rrd_id == 2:
             return [{"reportId": 11, "rrdId": 3, "dateFrom": date_from}]
-        if date_from.startswith("2026-05-05") and rrd_id == 0:
-            return None
         return None
 
     def write_rows(account_id, rows):
@@ -145,13 +142,18 @@ def test_run_finance_sales_report_sync_processes_days(monkeypatch):
         stop_event=threading.Event(),
         fetch_rows=fetch_rows,
         write_rows=write_rows,
+        checkpoint_progress=lambda cursor_timestamp, cursor_key: checkpoints.append((cursor_timestamp, cursor_key)),
     )
 
     assert result.rows_written == 3
     assert result.status == "success"
     assert [row["rrdId"] for row in written] == [1, 2, 3]
-    assert calls[0][2] == 0
-    assert calls[1][2] == 2
+    assert calls == [
+        ("2026-05-03T00:00:00+03:00", "2026-05-05T23:59:59+03:00", 0),
+        ("2026-05-03T00:00:00+03:00", "2026-05-05T23:59:59+03:00", 2),
+        ("2026-05-03T00:00:00+03:00", "2026-05-05T23:59:59+03:00", 3),
+    ]
+    assert checkpoints == [(datetime(2026, 5, 3, 0, 0, tzinfo=UTC), "2"), (datetime(2026, 5, 3, 0, 0, tzinfo=UTC), "3")]
     assert result.cursor_timestamp == datetime(2026, 5, 4, 21, 0, tzinfo=UTC)
 
 
@@ -171,4 +173,26 @@ def test_run_finance_sales_report_sync_returns_noop(monkeypatch):
     )
 
     assert result.rows_written == 0
+    assert result.status == "noop"
+
+
+def test_run_finance_sales_report_sync_resumes_from_cursor_key(monkeypatch):
+    monkeypatch.setenv("WB_TOKEN_1", "secret")
+    monkeypatch.setattr("wb_sync.sync_logic.moscow_now", lambda: datetime(2026, 5, 5, 12, 0, tzinfo=UTC) + timedelta(hours=3))
+
+    calls = []
+
+    def fetch_rows(token, date_from, date_to, rrd_id, stop_event, limit=100000):
+        calls.append((date_from, date_to, rrd_id))
+        return None
+
+    result = run_finance_sales_report_sync(
+        worker=make_worker(batch_limit=100000, api_type="finance_sales_report_details"),
+        state=WorkerState(1, "finance_sales_report_details", datetime(2026, 5, 3, 0, 0, tzinfo=UTC), "123", None, None, None, None, None, None, None, None),
+        stop_event=threading.Event(),
+        fetch_rows=fetch_rows,
+        write_rows=lambda account_id, rows: len(rows),
+    )
+
+    assert calls == [("2026-05-03T00:00:00+03:00", "2026-05-05T23:59:59+03:00", 123)]
     assert result.status == "noop"

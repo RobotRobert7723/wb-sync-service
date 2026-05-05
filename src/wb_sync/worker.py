@@ -93,6 +93,13 @@ class SyncWorker:
                         stop_event=self.stop_event,
                         fetch_rows=self._limited_finance_fetcher(),
                         write_rows=self._writer(),
+                        checkpoint_progress=lambda cursor_timestamp, cursor_key: self.repository.checkpoint_run_progress(
+                            self.worker_config.account_id,
+                            self.worker_config.api_type,
+                            run_id,
+                            cursor_timestamp,
+                            cursor_key,
+                        ),
                     )
                 else:
                     result = run_incremental_sync(
