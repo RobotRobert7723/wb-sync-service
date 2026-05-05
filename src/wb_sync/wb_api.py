@@ -11,11 +11,23 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from wb_sync.time_utils import format_wb_datetime
+from wb_sync.time_utils import MOSCOW_TZ, format_wb_datetime
 
 
 LOGGER = logging.getLogger(__name__)
-DATETIME_FIELDS = {"date", "lastChangeDate", "cancelDate"}
+DATETIME_FIELDS = {
+    "date",
+    "lastChangeDate",
+    "cancelDate",
+    "dateFrom",
+    "dateTo",
+    "createDate",
+    "fixTariffDateFrom",
+    "fixTariffDateTo",
+    "orderDt",
+    "saleDt",
+    "rrDate",
+}
 
 
 @dataclass(slots=True)
@@ -45,6 +57,7 @@ class AccountRateLimiter:
 
 class WbApiClient:
     BASE_URL = "https://statistics-api.wildberries.ru"
+    FINANCE_BASE_URL = "https://finance-api.wildberries.ru"
 
     def __init__(self, config: WbApiConfig):
         self.config = config
@@ -62,26 +75,54 @@ class WbApiClient:
         headers = {"Authorization": token}
         return self._request_json(url, headers, stop_event)
 
+    def fetch_finance_sales_report_details(
+        self,
+        token: str,
+        date_from: str,
+        date_to: str,
+        rrd_id: int,
+        stop_event: threading.Event,
+        limit: int = 100000,
+    ) -> list[dict[str, Any]] | None:
+        url = f"{self.FINANCE_BASE_URL}/api/finance/v1/sales-reports/detailed"
+        headers = {
+            "Authorization": token,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "dateFrom": date_from,
+            "dateTo": date_to,
+            "limit": limit,
+            "rrdId": rrd_id,
+            "period": "daily",
+        }
+        return self._request_json(url, headers, stop_event, payload=payload)
+
     def _request_json(
         self,
         url: str,
         headers: dict[str, str],
         stop_event: threading.Event,
-    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]] | None:
         attempt = 0
         while True:
             if stop_event.is_set():
                 raise RuntimeError("worker stopped before request")
             attempt += 1
             try:
-                request = Request(url=url, headers=headers, method="GET")
+                method = "GET" if payload is None else "POST"
+                data = None if payload is None else json.dumps(payload).encode("utf-8")
+                request = Request(url=url, headers=headers, method=method, data=data)
                 with urlopen(request, timeout=self.config.timeout_seconds) as response:
                     payload = response.read().decode("utf-8")
-                data = json.loads(payload)
-                if not isinstance(data, list):
-                    raise RuntimeError(f"unexpected WB response type: {type(data)!r}")
-                return [self._normalize_row(row) for row in data]
+                data_obj = json.loads(payload) if payload else []
+                if not isinstance(data_obj, list):
+                    raise RuntimeError(f"unexpected WB response type: {type(data_obj)!r}")
+                return [self._normalize_row(row) for row in data_obj]
             except HTTPError as exc:
+                if exc.code == 204:
+                    return None
                 if exc.code in {429, 500, 502, 503, 504} and attempt < self.config.retry_attempts:
                     self._sleep_backoff(attempt, stop_event)
                     continue
@@ -110,5 +151,5 @@ class WbApiClient:
         normalized = value.replace("Z", "+00:00")
         parsed = datetime.fromisoformat(normalized)
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=UTC)
+            return parsed.replace(tzinfo=MOSCOW_TZ).astimezone(UTC)
         return parsed.astimezone(UTC)

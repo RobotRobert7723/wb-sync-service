@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 
-ApiType = Literal["orders", "sales"]
+ApiType = Literal["orders", "sales", "finance_sales_report_details"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,4 +72,11 @@ class SyncResult:
     rows_written: int
     cursor_timestamp: datetime | None
     cursor_key: str | None
+    status: Literal["success", "noop"]
+
+
+@dataclass(frozen=True, slots=True)
+class FinanceSyncResult:
+    rows_written: int
+    cursor_timestamp: datetime | None
     status: Literal["success", "noop"]

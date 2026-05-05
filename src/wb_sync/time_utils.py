@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
+
+
+MOSCOW_TZ = timezone(timedelta(hours=3))
 
 
 def utcnow() -> datetime:
@@ -13,3 +16,7 @@ def format_wb_datetime(value: datetime) -> str:
 
 def default_lookback(days: int) -> datetime:
     return utcnow() - timedelta(days=days)
+
+
+def moscow_now() -> datetime:
+    return datetime.now(MOSCOW_TZ)

@@ -7,7 +7,7 @@ from typing import Callable
 
 from wb_sync.models import WorkerConfig
 from wb_sync.repository import SyncRepository
-from wb_sync.sync_logic import run_incremental_sync
+from wb_sync.sync_logic import run_finance_sales_report_sync, run_incremental_sync
 from wb_sync.wb_api import AccountRateLimiter, WbApiClient
 
 
@@ -41,10 +41,16 @@ class SyncWorker:
     def _row_key(self, row: dict[str, object]) -> str:
         if self.worker_config.api_type == "orders":
             return str(row.get("srid") or row.get("gNumber") or row.get("sticker"))
-        return str(row.get("saleID") or row.get("srid") or row.get("gNumber") or row.get("sticker"))
+        if self.worker_config.api_type == "sales":
+            return str(row.get("saleID") or row.get("srid") or row.get("gNumber") or row.get("sticker"))
+        return str(row.get("reportId")) + ":" + str(row.get("rrdId"))
 
     def _writer(self) -> Callable[[int, list[dict[str, object]]], int]:
-        return self.repository.upsert_orders if self.worker_config.api_type == "orders" else self.repository.upsert_sales
+        if self.worker_config.api_type == "orders":
+            return self.repository.upsert_orders
+        if self.worker_config.api_type == "sales":
+            return self.repository.upsert_sales
+        return self.repository.upsert_finance_sales_report_details
 
     def _run(self) -> None:
         while not self.stop_event.is_set():
@@ -67,21 +73,30 @@ class SyncWorker:
                         run_id,
                     )
                     break
-                result = run_incremental_sync(
-                    worker=self.worker_config,
-                    state=state,
-                    stop_event=self.stop_event,
-                    fetch_rows=self.api_client.fetch_rows,
-                    write_rows=self._writer(),
-                    key_builder=self._row_key,
-                )
+                if self.worker_config.api_type == "finance_sales_report_details":
+                    result = run_finance_sales_report_sync(
+                        worker=self.worker_config,
+                        state=state,
+                        stop_event=self.stop_event,
+                        fetch_rows=self.api_client.fetch_finance_sales_report_details,
+                        write_rows=self._writer(),
+                    )
+                else:
+                    result = run_incremental_sync(
+                        worker=self.worker_config,
+                        state=state,
+                        stop_event=self.stop_event,
+                        fetch_rows=self.api_client.fetch_rows,
+                        write_rows=self._writer(),
+                        key_builder=self._row_key,
+                    )
                 self.repository.mark_run_success(
                     self.worker_config.account_id,
                     self.worker_config.api_type,
                     run_id,
                     result.rows_written,
                     result.cursor_timestamp,
-                    result.cursor_key,
+                    getattr(result, "cursor_key", None),
                 )
                 LOGGER.info(
                     "worker sync finished",

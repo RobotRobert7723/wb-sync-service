@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+import json
 from datetime import datetime
 from decimal import Decimal
 from typing import Iterable
 
 from psycopg import sql
+from psycopg.types.json import Jsonb
 
 from wb_sync.db import Database
 from wb_sync.models import WorkerConfig, WorkerState
@@ -249,6 +250,32 @@ class SyncRepository:
             conn.commit()
         return len(records)
 
+    def upsert_finance_sales_report_details(self, account_id: int, rows: Iterable[dict[str, object]]) -> int:
+        records = [self._normalize_finance_sales_report_detail(account_id, row) for row in rows]
+        if not records:
+            return 0
+        columns = list(records[0].keys())
+        insert_sql = sql.SQL(
+            """
+            insert into wb_finance_sales_report_details ({fields})
+            values ({values})
+            on conflict (account_id, report_id, rrd_id) do update set
+            {updates}
+            """
+        ).format(
+            fields=sql.SQL(", ").join(map(sql.Identifier, columns)),
+            values=sql.SQL(", ").join(sql.Placeholder() for _ in columns),
+            updates=sql.SQL(", ").join(
+                sql.SQL("{} = excluded.{}").format(sql.Identifier(col), sql.Identifier(col))
+                for col in columns
+                if col not in {"account_id", "report_id", "rrd_id"}
+            ),
+        )
+        with self.db.connect() as conn, conn.cursor() as cur:
+            cur.executemany(insert_sql, [tuple(record[col] for col in columns) for record in records])
+            conn.commit()
+        return len(records)
+
     def _normalize_order(self, account_id: int, row: dict[str, object]) -> dict[str, object]:
         record_key = str(row.get("srid") or row.get("gNumber") or row.get("sticker"))
         return {
@@ -317,5 +344,102 @@ class SyncRepository:
             "sticker": row.get("sticker"),
             "g_number": row.get("gNumber"),
             "srid": row.get("srid"),
+            "updated_at": utcnow(),
+        }
+
+    def _normalize_finance_sales_report_detail(self, account_id: int, row: dict[str, object]) -> dict[str, object]:
+        return {
+            "account_id": account_id,
+            "report_id": row.get("reportId"),
+            "rrd_id": row.get("rrdId"),
+            "date_from": row.get("dateFrom"),
+            "date_to": row.get("dateTo"),
+            "create_date": row.get("createDate"),
+            "currency": row.get("currency"),
+            "report_type": row.get("reportType"),
+            "gi_id": row.get("giId"),
+            "dlv_prc": _to_decimal(row.get("dlvPrc")),
+            "fix_tariff_date_from": row.get("fixTariffDateFrom"),
+            "fix_tariff_date_to": row.get("fixTariffDateTo"),
+            "subject_name": row.get("subjectName"),
+            "nm_id": row.get("nmId"),
+            "brand_name": row.get("brandName"),
+            "vendor_code": row.get("vendorCode"),
+            "title": row.get("title"),
+            "tech_size": row.get("techSize"),
+            "sku": row.get("sku"),
+            "doc_type_name": row.get("docTypeName"),
+            "quantity": row.get("quantity"),
+            "retail_price": _to_decimal(row.get("retailPrice")),
+            "retail_amount": _to_decimal(row.get("retailAmount")),
+            "sale_percent": _to_decimal(row.get("salePercent")),
+            "commission_percent": _to_decimal(row.get("commissionPercent")),
+            "office_name": row.get("officeName"),
+            "seller_oper_name": row.get("sellerOperName"),
+            "order_dt": row.get("orderDt"),
+            "sale_dt": row.get("saleDt"),
+            "rr_date": row.get("rrDate"),
+            "shk_id": row.get("shkId"),
+            "retail_price_with_disc": _to_decimal(row.get("retailPriceWithDisc")),
+            "delivery_amount": _to_decimal(row.get("deliveryAmount")),
+            "return_amount": _to_decimal(row.get("returnAmount")),
+            "delivery_service": _to_decimal(row.get("deliveryService")),
+            "gi_box_type_name": row.get("giBoxTypeName"),
+            "product_discount_for_report": _to_decimal(row.get("productDiscountForReport")),
+            "seller_promo": _to_decimal(row.get("sellerPromo")),
+            "spp": _to_decimal(row.get("spp")),
+            "kvw_base": _to_decimal(row.get("kvwBase")),
+            "kvw": _to_decimal(row.get("kvw")),
+            "sup_rating_up": _to_decimal(row.get("supRatingUp")),
+            "is_kgvp_v2": row.get("isKgvpV2"),
+            "ppvz_sales_commission": _to_decimal(row.get("ppvzSalesCommission")),
+            "for_pay": _to_decimal(row.get("forPay")),
+            "ppvz_reward": _to_decimal(row.get("ppvzReward")),
+            "acquiring_fee": _to_decimal(row.get("acquiringFee")),
+            "acquiring_percent": _to_decimal(row.get("acquiringPercent")),
+            "payment_processing": row.get("paymentProcessing"),
+            "acquiring_bank": row.get("acquiringBank"),
+            "vw": _to_decimal(row.get("vw")),
+            "vw_nds": _to_decimal(row.get("vwNds")),
+            "ppvz_office_name": row.get("ppvzOfficeName"),
+            "ppvz_office_id": row.get("ppvzOfficeId"),
+            "ppvz_supplier_name": row.get("ppvzSupplierName"),
+            "ppvz_supplier_inn": row.get("ppvzSupplierInn"),
+            "declaration_number": row.get("declarationNumber"),
+            "bonus_type_name": row.get("bonusTypeName"),
+            "sticker_id": row.get("stickerId"),
+            "country": row.get("country"),
+            "srv_dbs": row.get("srvDbs"),
+            "penalty": _to_decimal(row.get("penalty")),
+            "additional_payment": _to_decimal(row.get("additionalPayment")),
+            "rebill_logistic_cost": _to_decimal(row.get("rebillLogisticCost")),
+            "rebill_logistic_org": row.get("rebillLogisticOrg"),
+            "paid_storage": _to_decimal(row.get("paidStorage")),
+            "deduction": _to_decimal(row.get("deduction")),
+            "paid_acceptance": _to_decimal(row.get("paidAcceptance")),
+            "order_id": row.get("orderId"),
+            "kiz": row.get("kiz"),
+            "is_b2b": row.get("isB2b"),
+            "trbx_id": row.get("trbxId"),
+            "installment_cofinancing_amount": _to_decimal(row.get("installmentCofinancingAmount")),
+            "wibes_discount_percent": _to_decimal(row.get("wibesDiscountPercent")),
+            "cashback_amount": _to_decimal(row.get("cashbackAmount")),
+            "cashback_discount": _to_decimal(row.get("cashbackDiscount")),
+            "cashback_commission_change": _to_decimal(row.get("cashbackCommissionChange")),
+            "payment_schedule": row.get("paymentSchedule"),
+            "delivery_method": row.get("deliveryMethod"),
+            "seller_promo_id": row.get("sellerPromoId"),
+            "seller_promo_discount": _to_decimal(row.get("sellerPromoDiscount")),
+            "loyalty_id": row.get("loyaltyId"),
+            "loyalty_discount": _to_decimal(row.get("loyaltyDiscount")),
+            "uuid_promocode": row.get("uuidPromocode"),
+            "sale_price_promocode_discount_prc": _to_decimal(row.get("salePricePromocodeDiscountPrc")),
+            "article_substitution": row.get("articleSubstitution"),
+            "sale_price_affiliated_discount_prc": _to_decimal(row.get("salePriceAffiliatedDiscountPrc")),
+            "agency_vat": _to_decimal(row.get("agencyVat")),
+            "sale_price_wholesale_discount_prc": _to_decimal(row.get("salePriceWholesaleDiscountPrc")),
+            "order_uid": row.get("orderUid"),
+            "srid": row.get("srid"),
+            "raw_payload": Jsonb(json.loads(json.dumps(row, default=str))),
             "updated_at": utcnow(),
         }

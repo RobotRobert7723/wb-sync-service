@@ -3,11 +3,11 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-from wb_sync.models import SyncResult, WorkerConfig, WorkerState
-from wb_sync.time_utils import default_lookback
+from wb_sync.models import FinanceSyncResult, SyncResult, WorkerConfig, WorkerState
+from wb_sync.time_utils import MOSCOW_TZ, default_lookback, moscow_now
 
 
 class Fetcher(Protocol):
@@ -16,6 +16,18 @@ class Fetcher(Protocol):
 
 class Writer(Protocol):
     def __call__(self, account_id: int, rows: list[dict[str, object]]) -> int: ...
+
+
+class FinanceFetcher(Protocol):
+    def __call__(
+        self,
+        token: str,
+        date_from: str,
+        date_to: str,
+        rrd_id: int,
+        stop_event: object,
+        limit: int = 100000,
+    ) -> list[dict[str, object]] | None: ...
 
 
 @dataclass(slots=True)
@@ -104,3 +116,44 @@ def run_incremental_sync(
                 f"cursor did not advance for account_id={worker.account_id} api_type={worker.api_type}; "
                 "likely repeated page boundary on identical lastChangeDate"
             )
+
+
+def run_finance_sales_report_sync(
+    worker: WorkerConfig,
+    state: WorkerState | None,
+    stop_event: object,
+    fetch_rows: FinanceFetcher,
+    write_rows: Writer,
+) -> FinanceSyncResult:
+    token = resolve_token(worker.token_env_var)
+    cursor_ts, _ = initial_cursor(worker, state)
+    current_day = cursor_ts.astimezone(MOSCOW_TZ).date()
+    today_msk = moscow_now().date()
+    rows_written = 0
+
+    day = current_day
+    while day <= today_msk:
+        if getattr(stop_event, "is_set", lambda: False)():
+            raise RuntimeError("worker stopped before finance request")
+
+        day_start = datetime(day.year, day.month, day.day, tzinfo=MOSCOW_TZ)
+        day_end = day_start + timedelta(days=1) - timedelta(seconds=1)
+        date_from = day_start.isoformat(timespec="seconds")
+        date_to = day_end.isoformat(timespec="seconds")
+        rrd_id = 0
+
+        while True:
+            payload = fetch_rows(token, date_from, date_to, rrd_id, stop_event, limit=min(worker.batch_limit, 100000))
+            if not payload:
+                break
+            rows_written += write_rows(worker.account_id, payload)
+            last_rrd_id = payload[-1].get("rrdId")
+            if last_rrd_id is None:
+                break
+            rrd_id = int(last_rrd_id)
+
+        day += timedelta(days=1)
+
+    cursor_day = today_msk
+    cursor_timestamp = datetime(cursor_day.year, cursor_day.month, cursor_day.day, tzinfo=MOSCOW_TZ).astimezone(UTC)
+    return FinanceSyncResult(rows_written=rows_written, cursor_timestamp=cursor_timestamp, status="success" if rows_written else "noop")

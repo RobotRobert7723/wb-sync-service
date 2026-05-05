@@ -22,6 +22,7 @@ wb_prod
 - `wb_prod.wb_sync_runs` — история запусков;
 - `wb_prod.wb_orders` — загруженные заказы;
 - `wb_prod.wb_sales` — загруженные продажи.
+- `wb_prod.wb_finance_sales_report_details` — детализация финансовых отчётов реализации.
 
 ## 3. Как добавить магазин
 
@@ -145,6 +146,7 @@ limit 20;
 ```sql
 select count(*) from wb_prod.wb_orders;
 select count(*) from wb_prod.wb_sales;
+select count(*) from wb_prod.wb_finance_sales_report_details;
 ```
 
 ## 6. Как смотреть логи
@@ -209,6 +211,7 @@ where account_id = 1
 ## 10. Важные замечания
 
 - Первая версия поддерживает только `orders` и `sales`.
+- Также поддерживается `finance_sales_report_details` для детализации финансовых отчётов реализации.
 - Сервис сохраняет все поля, доступные на сегодня в этих API.
 - Если WB добавит новые поля, потребуется обновление проекта.
 - Production работает только в схеме `wb_prod`.
