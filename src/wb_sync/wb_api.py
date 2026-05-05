@@ -151,5 +151,10 @@ class WbApiClient:
         normalized = value.replace("Z", "+00:00")
         parsed = datetime.fromisoformat(normalized)
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=MOSCOW_TZ).astimezone(UTC)
+            try:
+                return parsed.replace(tzinfo=MOSCOW_TZ).astimezone(UTC)
+            except OverflowError:
+                # Some WB payloads contain minimum representable naive dates.
+                # Converting them from UTC+3 to UTC may underflow Python datetime.
+                return parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
