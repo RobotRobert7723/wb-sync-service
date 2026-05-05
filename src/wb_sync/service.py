@@ -21,16 +21,20 @@ class DefaultWorkerFactory(WorkerFactory):
                 rate_limit_seconds=app_config.rate_limit_seconds,
             )
         )
-        self.rate_limiters: dict[int, AccountRateLimiter] = defaultdict(
+        self.rate_limiters: dict[tuple[int, str], AccountRateLimiter] = defaultdict(
             lambda: AccountRateLimiter(app_config.rate_limit_seconds)
         )
+
+    def _rate_limiter_key(self, config) -> tuple[int, str]:
+        api_group = "finance" if config.api_type == "finance_sales_report_details" else "statistics"
+        return (config.account_id, api_group)
 
     def build(self, config):
         return SyncWorker(
             worker_config=config,
             repository=self.repository,
             api_client=self.api_client,
-            rate_limiter=self.rate_limiters[config.account_id],
+            rate_limiter=self.rate_limiters[self._rate_limiter_key(config)],
         )
 
 
