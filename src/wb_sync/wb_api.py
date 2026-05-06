@@ -83,6 +83,7 @@ class WbApiClient:
         rrd_id: int,
         stop_event: threading.Event,
         limit: int = 100000,
+        period: str = "daily",
     ) -> list[dict[str, Any]] | None:
         url = f"{self.FINANCE_BASE_URL}/api/finance/v1/sales-reports/detailed"
         headers = {
@@ -94,7 +95,7 @@ class WbApiClient:
             "dateTo": date_to,
             "limit": limit,
             "rrdId": rrd_id,
-            "period": "daily",
+            "period": period,
         }
         return self._request_json(url, headers, stop_event, payload=payload)
 

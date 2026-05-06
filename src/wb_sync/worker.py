@@ -50,7 +50,14 @@ class SyncWorker:
             return self.repository.upsert_orders
         if self.worker_config.api_type == "sales":
             return self.repository.upsert_sales
+        if self.worker_config.api_type == "finance_sales_report_weekly":
+            return self.repository.upsert_finance_sales_report_weekly
         return self.repository.upsert_finance_sales_report_details
+
+    def _finance_period(self) -> str:
+        if self.worker_config.api_type == "finance_sales_report_weekly":
+            return "weekly"
+        return "daily"
 
     def _limited_stats_fetcher(self):
         def _fetch(api_type, token, date_from, stop_event):
@@ -62,7 +69,15 @@ class SyncWorker:
     def _limited_finance_fetcher(self):
         def _fetch(token, date_from, date_to, rrd_id, stop_event, limit=100000):
             self.rate_limiter.wait(self.stop_event)
-            return self.api_client.fetch_finance_sales_report_details(token, date_from, date_to, rrd_id, stop_event, limit=limit)
+            return self.api_client.fetch_finance_sales_report_details(
+                token,
+                date_from,
+                date_to,
+                rrd_id,
+                stop_event,
+                limit=limit,
+                period=self._finance_period(),
+            )
 
         return _fetch
 
@@ -86,7 +101,7 @@ class SyncWorker:
                         run_id,
                     )
                     break
-                if self.worker_config.api_type == "finance_sales_report_details":
+                if self.worker_config.api_type in {"finance_sales_report_details", "finance_sales_report_weekly"}:
                     result = run_finance_sales_report_sync(
                         worker=self.worker_config,
                         state=state,

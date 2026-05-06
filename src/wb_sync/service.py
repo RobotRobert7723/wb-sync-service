@@ -26,7 +26,7 @@ class DefaultWorkerFactory(WorkerFactory):
         )
 
     def _rate_limiter_key(self, config) -> tuple[int, str]:
-        api_group = "finance" if config.api_type == "finance_sales_report_details" else "statistics"
+        api_group = "finance" if config.api_type in {"finance_sales_report_details", "finance_sales_report_weekly"} else "statistics"
         return (config.account_id, api_group)
 
     def build(self, config):

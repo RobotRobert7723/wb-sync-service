@@ -280,18 +280,25 @@ class SyncRepository:
         return len(records)
 
     def upsert_finance_sales_report_details(self, account_id: int, rows: Iterable[dict[str, object]]) -> int:
+        return self._upsert_finance_rows("wb_finance_sales_report_details", account_id, rows)
+
+    def upsert_finance_sales_report_weekly(self, account_id: int, rows: Iterable[dict[str, object]]) -> int:
+        return self._upsert_finance_rows("wb_finance_sales_report_weekly", account_id, rows)
+
+    def _upsert_finance_rows(self, table_name: str, account_id: int, rows: Iterable[dict[str, object]]) -> int:
         records = [self._normalize_finance_sales_report_detail(account_id, row) for row in rows]
         if not records:
             return 0
         columns = list(records[0].keys())
         insert_sql = sql.SQL(
             """
-            insert into wb_finance_sales_report_details ({fields})
+            insert into {table_name} ({fields})
             values ({values})
             on conflict (account_id, report_id, rrd_id) do update set
             {updates}
             """
         ).format(
+            table_name=sql.Identifier(table_name),
             fields=sql.SQL(", ").join(map(sql.Identifier, columns)),
             values=sql.SQL(", ").join(sql.Placeholder() for _ in columns),
             updates=sql.SQL(", ").join(

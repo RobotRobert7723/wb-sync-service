@@ -5,7 +5,7 @@ from datetime import date, datetime
 from typing import Literal
 
 
-ApiType = Literal["orders", "sales", "finance_sales_report_details"]
+ApiType = Literal["orders", "sales", "finance_sales_report_details", "finance_sales_report_weekly"]
 
 
 @dataclass(frozen=True, slots=True)
