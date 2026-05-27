@@ -7,7 +7,7 @@ from typing import Callable
 
 from wb_sync.models import WorkerConfig
 from wb_sync.repository import SyncRepository
-from wb_sync.sync_logic import run_finance_sales_report_sync, run_incremental_sync
+from wb_sync.sync_logic import run_finance_sales_report_sync, run_incremental_sync, run_warehouse_remains_sync
 from wb_sync.wb_api import AccountRateLimiter, WbApiClient
 
 
@@ -50,6 +50,8 @@ class SyncWorker:
             return self.repository.upsert_orders
         if self.worker_config.api_type == "sales":
             return self.repository.upsert_sales
+        if self.worker_config.api_type == "warehouse_remains":
+            return self.repository.replace_warehouse_remains
         if self.worker_config.api_type == "finance_sales_report_weekly":
             return self.repository.upsert_finance_sales_report_weekly
         return self.repository.upsert_finance_sales_report_details
@@ -81,78 +83,119 @@ class SyncWorker:
 
         return _fetch
 
-    def _run(self) -> None:
-        while not self.stop_event.is_set():
-            run_id = str(uuid.uuid4())
-            logger_extra = {
-                "account_id": self.worker_config.account_id,
-                "account_code": self.worker_config.account_code,
-                "api_type": self.worker_config.api_type,
-                "worker_id": self.worker_config.id,
-                "run_id": run_id,
-            }
-            try:
-                self.repository.mark_run_started(self.worker_config.account_id, self.worker_config.api_type, run_id)
-                state = self.repository.get_state(self.worker_config.account_id, self.worker_config.api_type)
-                if self.stop_event.is_set():
-                    self.repository.mark_run_interrupted(
-                        self.worker_config.account_id,
-                        self.worker_config.api_type,
-                        run_id,
-                    )
-                    break
-                if self.worker_config.api_type in {"finance_sales_report_details", "finance_sales_report_weekly"}:
-                    result = run_finance_sales_report_sync(
-                        worker=self.worker_config,
-                        state=state,
-                        stop_event=self.stop_event,
-                        fetch_rows=self._limited_finance_fetcher(),
-                        write_rows=self._writer(),
-                        checkpoint_progress=lambda cursor_timestamp, cursor_key: self.repository.checkpoint_run_progress(
-                            self.worker_config.account_id,
-                            self.worker_config.api_type,
-                            run_id,
-                            cursor_timestamp,
-                            cursor_key,
-                        ),
-                    )
-                else:
-                    result = run_incremental_sync(
-                        worker=self.worker_config,
-                        state=state,
-                        stop_event=self.stop_event,
-                        fetch_rows=self._limited_stats_fetcher(),
-                        write_rows=self._writer(),
-                        key_builder=self._row_key,
-                    )
-                self.repository.mark_run_success(
+    def _limited_finance_report_fetcher(self):
+        def _fetch(token, report_id, stop_event):
+            self.rate_limiter.wait(self.stop_event)
+            return self.api_client.fetch_finance_sales_report_by_id(
+                token,
+                report_id,
+                stop_event,
+            )
+
+        return _fetch
+
+    def _limited_warehouse_fetcher(self):
+        def _fetch(token, stop_event):
+            self.rate_limiter.wait(self.stop_event)
+            return self.api_client.fetch_warehouse_remains(
+                token,
+                stop_event,
+            )
+
+        return _fetch
+
+    def run_once(self) -> bool:
+        run_id = str(uuid.uuid4())
+        logger_extra = {
+            "account_id": self.worker_config.account_id,
+            "account_code": self.worker_config.account_code,
+            "api_type": self.worker_config.api_type,
+            "worker_id": self.worker_config.id,
+            "run_id": run_id,
+        }
+        try:
+            self.repository.mark_run_started(self.worker_config.account_id, self.worker_config.api_type, run_id)
+            state = self.repository.get_state(self.worker_config.account_id, self.worker_config.api_type)
+            if self.stop_event.is_set():
+                self.repository.mark_run_interrupted(
                     self.worker_config.account_id,
                     self.worker_config.api_type,
                     run_id,
-                    result.rows_written,
-                    result.cursor_timestamp,
-                    getattr(result, "cursor_key", None),
                 )
-                LOGGER.info(
-                    "worker sync finished",
-                    extra={
-                        **logger_extra,
-                        "cursor_to": result.cursor_timestamp.isoformat() if result.cursor_timestamp else None,
-                        "rows_written": result.rows_written,
-                        "status": result.status,
-                    },
-                )
-            except Exception as exc:
-                if self.stop_event.is_set():
-                    self.repository.mark_run_interrupted(
+                return False
+            if self.worker_config.api_type in {"finance_sales_report_details", "finance_sales_report_weekly"}:
+                result = run_finance_sales_report_sync(
+                    worker=self.worker_config,
+                    state=state,
+                    stop_event=self.stop_event,
+                    fetch_rows=self._limited_finance_fetcher(),
+                    write_rows=self._writer(),
+                    fetch_report_rows=self._limited_finance_report_fetcher(),
+                    checkpoint_progress=lambda cursor_timestamp, cursor_key: self.repository.checkpoint_run_progress(
                         self.worker_config.account_id,
                         self.worker_config.api_type,
                         run_id,
-                        str(exc),
-                    )
-                    LOGGER.info("worker stopped during sync", extra={**logger_extra, "status": "stopped"})
-                    break
-                self.repository.mark_run_error(self.worker_config.account_id, self.worker_config.api_type, run_id, str(exc))
-                LOGGER.exception("worker sync failed", extra={**logger_extra, "status": "error"})
+                        cursor_timestamp,
+                        cursor_key,
+                    ),
+                )
+                article_fact_rows = None
+                if self.worker_config.api_type == "finance_sales_report_details":
+                    article_fact_rows = self.repository.load_article_daily_facts(self.worker_config.account_id)
+            elif self.worker_config.api_type == "warehouse_remains":
+                result = run_warehouse_remains_sync(
+                    worker=self.worker_config,
+                    stop_event=self.stop_event,
+                    fetch_rows=self._limited_warehouse_fetcher(),
+                    write_rows=self._writer(),
+                )
+                article_fact_rows = None
+            else:
+                result = run_incremental_sync(
+                    worker=self.worker_config,
+                    state=state,
+                    stop_event=self.stop_event,
+                    fetch_rows=self._limited_stats_fetcher(),
+                    write_rows=self._writer(),
+                    key_builder=self._row_key,
+                )
+                article_fact_rows = None
+            self.repository.mark_run_success(
+                self.worker_config.account_id,
+                self.worker_config.api_type,
+                run_id,
+                result.rows_written,
+                result.cursor_timestamp,
+                getattr(result, "cursor_key", None),
+            )
+            LOGGER.info(
+                "worker sync finished",
+                extra={
+                    **logger_extra,
+                    "cursor_to": result.cursor_timestamp.isoformat() if result.cursor_timestamp else None,
+                    "rows_written": result.rows_written,
+                    "article_fact_rows": article_fact_rows if self.worker_config.api_type == "finance_sales_report_details" else None,
+                    "status": result.status,
+                },
+            )
+            return True
+        except Exception as exc:
+            if self.stop_event.is_set():
+                self.repository.mark_run_interrupted(
+                    self.worker_config.account_id,
+                    self.worker_config.api_type,
+                    run_id,
+                    str(exc),
+                )
+                LOGGER.info("worker stopped during sync", extra={**logger_extra, "status": "stopped"})
+                return False
+            self.repository.mark_run_error(self.worker_config.account_id, self.worker_config.api_type, run_id, str(exc))
+            LOGGER.exception("worker sync failed", extra={**logger_extra, "status": "error"})
+            return True
+
+    def _run(self) -> None:
+        while not self.stop_event.is_set():
+            if not self.run_once():
+                break
             if self.stop_event.wait(self.worker_config.schedule_seconds):
                 break

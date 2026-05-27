@@ -58,6 +58,7 @@ class AccountRateLimiter:
 class WbApiClient:
     BASE_URL = "https://statistics-api.wildberries.ru"
     FINANCE_BASE_URL = "https://finance-api.wildberries.ru"
+    ANALYTICS_BASE_URL = "https://seller-analytics-api.wildberries.ru"
 
     def __init__(self, config: WbApiConfig):
         self.config = config
@@ -99,6 +100,58 @@ class WbApiClient:
         }
         return self._request_json(url, headers, stop_event, payload=payload)
 
+    def fetch_finance_sales_report_by_id(
+        self,
+        token: str,
+        report_id: int,
+        stop_event: threading.Event,
+    ) -> list[dict[str, Any]] | None:
+        url = f"{self.FINANCE_BASE_URL}/api/finance/v1/sales-reports/detailed/{report_id}"
+        headers = {
+            "Authorization": token,
+            "Content-Type": "application/json",
+        }
+        return self._request_json(url, headers, stop_event, payload={})
+
+    def fetch_warehouse_remains(
+        self,
+        token: str,
+        stop_event: threading.Event,
+        locale: str = "ru",
+    ) -> list[dict[str, Any]] | None:
+        headers = {"Authorization": token}
+        query = urlencode(
+            {
+                "locale": locale,
+                "groupByBrand": "true",
+                "groupBySubject": "true",
+                "groupBySa": "true",
+                "groupByNm": "true",
+                "groupByBarcode": "true",
+                "groupBySize": "true",
+            }
+        )
+        create_url = f"{self.ANALYTICS_BASE_URL}/api/v1/warehouse_remains?{query}"
+        task_response = self._request_object(create_url, headers, stop_event)
+        task_id = ((task_response or {}).get("data") or {}).get("taskId")
+        if not task_id:
+            raise RuntimeError("WB warehouse_remains: taskId missing in create response")
+
+        status_url = f"{self.ANALYTICS_BASE_URL}/api/v1/warehouse_remains/tasks/{task_id}/status"
+        while True:
+            if stop_event.is_set():
+                raise RuntimeError("worker stopped before warehouse_remains status check")
+            status_response = self._request_object(status_url, headers, stop_event)
+            status = str(((status_response or {}).get("data") or {}).get("status") or "").lower()
+            if status == "done":
+                break
+            if status in {"failed", "error", "cancelled"}:
+                raise RuntimeError(f"WB warehouse_remains task failed: {status}")
+            stop_event.wait(5)
+
+        download_url = f"{self.ANALYTICS_BASE_URL}/api/v1/warehouse_remains/tasks/{task_id}/download"
+        return self._request_json(download_url, headers, stop_event)
+
     def _request_json(
         self,
         url: str,
@@ -121,6 +174,42 @@ class WbApiClient:
                 if not isinstance(data_obj, list):
                     raise RuntimeError(f"unexpected WB response type: {type(data_obj)!r}")
                 return [self._normalize_row(row) for row in data_obj]
+            except HTTPError as exc:
+                if exc.code == 204:
+                    return None
+                if exc.code in {429, 500, 502, 503, 504} and attempt < self.config.retry_attempts:
+                    self._sleep_backoff(attempt, stop_event)
+                    continue
+                detail = exc.read().decode("utf-8", errors="ignore")
+                raise RuntimeError(f"WB API HTTP {exc.code}: {detail}") from exc
+            except URLError as exc:
+                if attempt < self.config.retry_attempts:
+                    self._sleep_backoff(attempt, stop_event)
+                    continue
+                raise RuntimeError(f"WB API network error: {exc.reason}") from exc
+
+    def _request_object(
+        self,
+        url: str,
+        headers: dict[str, str],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        attempt = 0
+        while True:
+            if stop_event.is_set():
+                raise RuntimeError("worker stopped before request")
+            attempt += 1
+            try:
+                method = "GET" if payload is None else "POST"
+                data = None if payload is None else json.dumps(payload).encode("utf-8")
+                request = Request(url=url, headers=headers, method=method, data=data)
+                with urlopen(request, timeout=self.config.timeout_seconds) as response:
+                    payload_text = response.read().decode("utf-8")
+                data_obj = json.loads(payload_text) if payload_text else None
+                if data_obj is not None and not isinstance(data_obj, dict):
+                    raise RuntimeError(f"unexpected WB response type: {type(data_obj)!r}")
+                return data_obj
             except HTTPError as exc:
                 if exc.code == 204:
                     return None

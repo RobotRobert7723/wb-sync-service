@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 
 from wb_sync.db import Database
 from wb_sync.models import WorkerConfig, WorkerState
+from wb_sync.schema import _article_daily_facts_insert_sql
 from wb_sync.time_utils import utcnow
 
 
@@ -285,6 +286,62 @@ class SyncRepository:
     def upsert_finance_sales_report_weekly(self, account_id: int, rows: Iterable[dict[str, object]]) -> int:
         return self._upsert_finance_rows("wb_finance_sales_report_weekly", account_id, rows)
 
+    def replace_warehouse_remains(self, account_id: int, rows: Iterable[dict[str, object]]) -> int:
+        snapshot_at = utcnow()
+        records = [self._normalize_warehouse_remains_row(account_id, row, warehouse, snapshot_at) for row in rows for warehouse in row.get("warehouses", [])]
+        with self.db.connect() as conn, conn.cursor() as cur:
+            cur.execute("delete from wb_warehouse_remains where account_id = %s", (account_id,))
+            if records:
+                columns = list(records[0].keys())
+                insert_sql = sql.SQL(
+                    """
+                    insert into wb_warehouse_remains ({fields})
+                    values ({values})
+                    on conflict (account_id, nm_id, barcode, tech_size, warehouse_name) do update set
+                    {updates}
+                    """
+                ).format(
+                    fields=sql.SQL(", ").join(map(sql.Identifier, columns)),
+                    values=sql.SQL(", ").join(sql.Placeholder() for _ in columns),
+                    updates=sql.SQL(", ").join(
+                        sql.SQL("{} = excluded.{}").format(sql.Identifier(col), sql.Identifier(col))
+                        for col in columns
+                        if col not in {"account_id", "nm_id", "barcode", "tech_size", "warehouse_name"}
+                    ),
+                )
+                cur.executemany(insert_sql, [tuple(record[col] for col in columns) for record in records])
+            conn.commit()
+        return len(records)
+
+    def load_article_daily_facts(self, account_id: int) -> int:
+        with self.db.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                select exists (
+                    select 1
+                    from wb_article_daily_facts
+                    where fact_date = (now() at time zone 'Europe/Moscow')::date
+                      and account_id = %s
+                ) as already_loaded
+                """,
+                (account_id,),
+            )
+            row = cur.fetchone()
+            if row and row["already_loaded"]:
+                return 0
+
+            cur.execute(
+                _article_daily_facts_insert_sql(
+                    self.db.schema,
+                    "wb_article_daily_facts",
+                    "      and d.account_id = %s",
+                ),
+                (account_id,),
+            )
+            rows_inserted = cur.rowcount if cur.rowcount is not None and cur.rowcount > 0 else 0
+            conn.commit()
+            return rows_inserted
+
     def _upsert_finance_rows(self, table_name: str, account_id: int, rows: Iterable[dict[str, object]]) -> int:
         records = [self._normalize_finance_sales_report_detail(account_id, row) for row in rows]
         if not records:
@@ -477,5 +534,30 @@ class SyncRepository:
             "order_uid": row.get("orderUid"),
             "srid": row.get("srid"),
             "raw_payload": Jsonb(json.loads(json.dumps(row, default=str))),
+            "updated_at": utcnow(),
+        }
+
+    def _normalize_warehouse_remains_row(
+        self,
+        account_id: int,
+        row: dict[str, object],
+        warehouse: dict[str, object],
+        snapshot_at: datetime,
+    ) -> dict[str, object]:
+        payload = dict(row)
+        payload["warehouse"] = warehouse
+        return {
+            "account_id": account_id,
+            "snapshot_at": snapshot_at,
+            "brand": row.get("brand"),
+            "subject_name": row.get("subjectName"),
+            "vendor_code": row.get("vendorCode"),
+            "nm_id": row.get("nmId"),
+            "barcode": row.get("barcode"),
+            "tech_size": row.get("techSize"),
+            "volume": _to_decimal(row.get("volume")),
+            "warehouse_name": str(warehouse.get("warehouseName") or ""),
+            "quantity": int(warehouse.get("quantity") or 0),
+            "raw_payload": Jsonb(json.loads(json.dumps(payload, default=str))),
             "updated_at": utcnow(),
         }

@@ -26,7 +26,12 @@ class DefaultWorkerFactory(WorkerFactory):
         )
 
     def _rate_limiter_key(self, config) -> tuple[int, str]:
-        api_group = "finance" if config.api_type in {"finance_sales_report_details", "finance_sales_report_weekly"} else "statistics"
+        if config.api_type in {"finance_sales_report_details", "finance_sales_report_weekly"}:
+            api_group = "finance"
+        elif config.api_type == "warehouse_remains":
+            api_group = "analytics"
+        else:
+            api_group = "statistics"
         return (config.account_id, api_group)
 
     def build(self, config):
@@ -43,3 +48,19 @@ def build_dispatcher(app_config: AppConfig) -> Dispatcher:
     repository = SyncRepository(db)
     factory = DefaultWorkerFactory(repository, app_config)
     return Dispatcher(repository, factory, app_config.dispatcher_poll_seconds)
+
+
+def run_workers_once(app_config: AppConfig, api_type: str | None = None, account_id: int | None = None) -> int:
+    db = Database(app_config.pg_dsn, app_config.db_schema)
+    repository = SyncRepository(db)
+    factory = DefaultWorkerFactory(repository, app_config)
+    configs = [
+        config
+        for config in repository.load_worker_configs()
+        if config.enabled
+        and (api_type is None or config.api_type == api_type)
+        and (account_id is None or config.account_id == account_id)
+    ]
+    for config in configs:
+        factory.build(config).run_once()
+    return len(configs)

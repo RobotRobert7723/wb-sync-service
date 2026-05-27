@@ -30,6 +30,23 @@ class FinanceFetcher(Protocol):
     ) -> list[dict[str, object]] | None: ...
 
 
+class FinanceReportFetcher(Protocol):
+    def __call__(
+        self,
+        token: str,
+        report_id: int,
+        stop_event: object,
+    ) -> list[dict[str, object]] | None: ...
+
+
+class WarehouseRemainsFetcher(Protocol):
+    def __call__(
+        self,
+        token: str,
+        stop_event: object,
+    ) -> list[dict[str, object]] | None: ...
+
+
 class ProgressCheckpoint(Protocol):
     def __call__(self, cursor_timestamp: datetime | None, cursor_key: str | None) -> None: ...
 
@@ -128,6 +145,7 @@ def run_finance_sales_report_sync(
     stop_event: object,
     fetch_rows: FinanceFetcher,
     write_rows: Writer,
+    fetch_report_rows: FinanceReportFetcher | None = None,
     checkpoint_progress: ProgressCheckpoint | None = None,
 ) -> FinanceSyncResult:
     token = resolve_token(worker.token_env_var)
@@ -145,12 +163,34 @@ def run_finance_sales_report_sync(
     date_from = period_start.isoformat(timespec="seconds")
     date_to = period_end.isoformat(timespec="seconds")
     rrd_id = start_rrd_id
+    hydrated_report_ids: set[int] = set()
 
     while True:
         payload = fetch_rows(token, date_from, date_to, rrd_id, stop_event, limit=min(worker.batch_limit, 100000))
         if not payload:
             break
-        rows_written += write_rows(worker.account_id, payload)
+        rows_to_write = payload
+        if worker.api_type == "finance_sales_report_weekly" and fetch_report_rows is not None:
+            rows_to_write = []
+            payload_by_report: dict[int, list[dict[str, object]]] = {}
+            for row in payload:
+                report_id_obj = row.get("reportId")
+                if report_id_obj is None:
+                    continue
+                report_id = int(report_id_obj)
+                payload_by_report.setdefault(report_id, []).append(row)
+
+            for report_id, fallback_rows in payload_by_report.items():
+                if report_id in hydrated_report_ids:
+                    continue
+                hydrated_report_ids.add(report_id)
+                authoritative_rows = fetch_report_rows(token, report_id, stop_event)
+                rows_to_write.extend(authoritative_rows or fallback_rows)
+
+            if not rows_to_write:
+                rows_to_write = payload
+
+        rows_written += write_rows(worker.account_id, rows_to_write)
         last_rrd_id = payload[-1].get("rrdId")
         if last_rrd_id is None:
             break
@@ -161,3 +201,20 @@ def run_finance_sales_report_sync(
     cursor_day = today_msk
     cursor_timestamp = datetime(cursor_day.year, cursor_day.month, cursor_day.day, tzinfo=MOSCOW_TZ).astimezone(UTC)
     return FinanceSyncResult(rows_written=rows_written, cursor_timestamp=cursor_timestamp, status="success" if rows_written else "noop")
+
+
+def run_warehouse_remains_sync(
+    worker: WorkerConfig,
+    stop_event: object,
+    fetch_rows: WarehouseRemainsFetcher,
+    write_rows: Writer,
+) -> SyncResult:
+    token = resolve_token(worker.token_env_var)
+    payload = fetch_rows(token, stop_event)
+    rows_written = write_rows(worker.account_id, payload or [])
+    return SyncResult(
+        rows_written=rows_written,
+        cursor_timestamp=datetime.now(UTC),
+        cursor_key=None,
+        status="success" if rows_written else "noop",
+    )

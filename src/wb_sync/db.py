@@ -12,6 +12,10 @@ class Database:
         self._dsn = dsn
         self._schema = schema
 
+    @property
+    def schema(self) -> str:
+        return self._schema
+
     @contextmanager
     def connect(self) -> Iterator[psycopg.Connection]:
         with psycopg.connect(self._dsn, row_factory=dict_row) as conn:
