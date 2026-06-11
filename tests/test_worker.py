@@ -24,6 +24,9 @@ class FakeApiClient:
     def fetch_finance_sales_report_by_id(self, *_args, **_kwargs):
         return None
 
+    def fetch_finance_sales_report_list(self, *_args, **_kwargs):
+        return []
+
 
 class FakeRepository:
     def __init__(self):
@@ -44,6 +47,9 @@ class FakeRepository:
 
     def upsert_finance_sales_report_weekly(self, _account_id, rows):
         return len(rows)
+
+    def get_existing_weekly_report_ids(self, _account_id, report_ids):
+        return set(report_ids)
 
     def load_article_daily_facts(self, account_id):
         self.fact_loads.append(account_id)

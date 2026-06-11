@@ -6,7 +6,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from wb_sync.models import WorkerConfig, WorkerState
-from wb_sync.sync_logic import filter_page, run_finance_sales_report_sync, run_incremental_sync
+from wb_sync.sync_logic import (
+    filter_page,
+    run_finance_sales_report_sync,
+    run_finance_sales_report_weekly_sync,
+    run_incremental_sync,
+)
 
 
 def make_worker(batch_limit=3, api_type="orders"):
@@ -196,3 +201,43 @@ def test_run_finance_sales_report_sync_resumes_from_cursor_key(monkeypatch):
 
     assert calls == [("2026-05-03T00:00:00+03:00", "2026-05-05T23:59:59+03:00", 123)]
     assert result.status == "noop"
+
+
+def test_run_finance_sales_report_weekly_sync_fetches_missing_report_ids(monkeypatch):
+    monkeypatch.setenv("WB_TOKEN_1", "secret")
+    monkeypatch.setattr("wb_sync.sync_logic.moscow_now", lambda: datetime(2026, 6, 11, 12, 0, tzinfo=UTC) + timedelta(hours=3))
+
+    list_calls = []
+    detail_calls = []
+    written = []
+
+    def fetch_report_list(token, date_from, date_to, stop_event):
+        list_calls.append((date_from, date_to))
+        return [
+            {"reportId": 726719011, "dateFrom": "2026-05-18", "dateTo": "2026-05-24", "createDate": "2026-05-25"},
+            {"reportId": 736463794, "dateFrom": "2026-05-25", "dateTo": "2026-05-31", "createDate": "2026-06-01"},
+            {"reportId": 743472446, "dateFrom": "2026-06-01", "dateTo": "2026-06-07", "createDate": "2026-06-08"},
+        ]
+
+    def fetch_report_rows(token, report_id, stop_event):
+        detail_calls.append(report_id)
+        return [{"reportId": report_id, "rrdId": report_id * 10}]
+
+    def write_rows(account_id, rows):
+        written.extend(rows)
+        return len(rows)
+
+    result = run_finance_sales_report_weekly_sync(
+        worker=make_worker(batch_limit=100000, api_type="finance_sales_report_weekly"),
+        stop_event=threading.Event(),
+        fetch_report_list=fetch_report_list,
+        fetch_report_rows=fetch_report_rows,
+        get_existing_report_ids=lambda account_id, report_ids: {726719011},
+        write_rows=write_rows,
+    )
+
+    assert list_calls == [("2026-05-12T00:00:00+03:00", "2026-06-11T23:59:59+03:00")]
+    assert detail_calls == [736463794, 743472446]
+    assert [row["reportId"] for row in written] == [736463794, 743472446]
+    assert result.rows_written == 2
+    assert result.status == "success"

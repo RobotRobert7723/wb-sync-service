@@ -113,6 +113,24 @@ class WbApiClient:
         }
         return self._request_json(url, headers, stop_event, payload={})
 
+    def fetch_finance_sales_report_list(
+        self,
+        token: str,
+        date_from: str,
+        date_to: str,
+        stop_event: threading.Event,
+    ) -> list[dict[str, Any]] | None:
+        url = f"{self.FINANCE_BASE_URL}/api/finance/v1/sales-reports/list"
+        headers = {
+            "Authorization": token,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "dateFrom": date_from,
+            "dateTo": date_to,
+        }
+        return self._request_json(url, headers, stop_event, payload=payload)
+
     def fetch_warehouse_remains(
         self,
         token: str,

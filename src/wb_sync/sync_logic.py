@@ -39,6 +39,16 @@ class FinanceReportFetcher(Protocol):
     ) -> list[dict[str, object]] | None: ...
 
 
+class FinanceReportListFetcher(Protocol):
+    def __call__(
+        self,
+        token: str,
+        date_from: str,
+        date_to: str,
+        stop_event: object,
+    ) -> list[dict[str, object]] | None: ...
+
+
 class WarehouseRemainsFetcher(Protocol):
     def __call__(
         self,
@@ -215,6 +225,56 @@ def run_warehouse_remains_sync(
     return SyncResult(
         rows_written=rows_written,
         cursor_timestamp=datetime.now(UTC),
+        cursor_key=None,
+        status="success" if rows_written else "noop",
+    )
+
+
+def run_finance_sales_report_weekly_sync(
+    worker: WorkerConfig,
+    stop_event: object,
+    fetch_report_list: FinanceReportListFetcher,
+    fetch_report_rows: FinanceReportFetcher,
+    get_existing_report_ids: Callable[[int, list[int]], set[int]],
+    write_rows: Writer,
+) -> SyncResult:
+    token = resolve_token(worker.token_env_var)
+    today_msk = moscow_now()
+    period_start = datetime(
+        (today_msk - timedelta(days=worker.lookback_days)).year,
+        (today_msk - timedelta(days=worker.lookback_days)).month,
+        (today_msk - timedelta(days=worker.lookback_days)).day,
+        tzinfo=MOSCOW_TZ,
+    )
+    period_end = datetime(today_msk.year, today_msk.month, today_msk.day, tzinfo=MOSCOW_TZ) + timedelta(days=1) - timedelta(seconds=1)
+    date_from = period_start.isoformat(timespec="seconds")
+    date_to = period_end.isoformat(timespec="seconds")
+
+    report_list = fetch_report_list(token, date_from, date_to, stop_event) or []
+    report_list_sorted = sorted(
+        report_list,
+        key=lambda row: (
+            row.get("createDate") or row.get("dateTo") or row.get("dateFrom"),
+            row.get("reportId") or 0,
+        ),
+    )
+    report_ids = [int(row["reportId"]) for row in report_list_sorted if row.get("reportId") is not None]
+    existing_report_ids = get_existing_report_ids(worker.account_id, report_ids)
+
+    rows_written = 0
+    for report in report_list_sorted:
+        report_id_obj = report.get("reportId")
+        if report_id_obj is None:
+            continue
+        report_id = int(report_id_obj)
+        if report_id in existing_report_ids:
+            continue
+        payload = fetch_report_rows(token, report_id, stop_event) or []
+        rows_written += write_rows(worker.account_id, payload)
+
+    return SyncResult(
+        rows_written=rows_written,
+        cursor_timestamp=period_end.astimezone(UTC),
         cursor_key=None,
         status="success" if rows_written else "noop",
     )

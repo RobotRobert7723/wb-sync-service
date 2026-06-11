@@ -7,7 +7,12 @@ from typing import Callable
 
 from wb_sync.models import WorkerConfig
 from wb_sync.repository import SyncRepository
-from wb_sync.sync_logic import run_finance_sales_report_sync, run_incremental_sync, run_warehouse_remains_sync
+from wb_sync.sync_logic import (
+    run_finance_sales_report_sync,
+    run_finance_sales_report_weekly_sync,
+    run_incremental_sync,
+    run_warehouse_remains_sync,
+)
 from wb_sync.wb_api import AccountRateLimiter, WbApiClient
 
 
@@ -94,6 +99,18 @@ class SyncWorker:
 
         return _fetch
 
+    def _limited_finance_report_list_fetcher(self):
+        def _fetch(token, date_from, date_to, stop_event):
+            self.rate_limiter.wait(self.stop_event)
+            return self.api_client.fetch_finance_sales_report_list(
+                token,
+                date_from,
+                date_to,
+                stop_event,
+            )
+
+        return _fetch
+
     def _limited_warehouse_fetcher(self):
         def _fetch(token, stop_event):
             self.rate_limiter.wait(self.stop_event)
@@ -123,7 +140,17 @@ class SyncWorker:
                     run_id,
                 )
                 return False
-            if self.worker_config.api_type in {"finance_sales_report_details", "finance_sales_report_weekly"}:
+            if self.worker_config.api_type == "finance_sales_report_weekly":
+                result = run_finance_sales_report_weekly_sync(
+                    worker=self.worker_config,
+                    stop_event=self.stop_event,
+                    fetch_report_list=self._limited_finance_report_list_fetcher(),
+                    fetch_report_rows=self._limited_finance_report_fetcher(),
+                    get_existing_report_ids=self.repository.get_existing_weekly_report_ids,
+                    write_rows=self._writer(),
+                )
+                article_fact_rows = None
+            elif self.worker_config.api_type == "finance_sales_report_details":
                 result = run_finance_sales_report_sync(
                     worker=self.worker_config,
                     state=state,
@@ -140,8 +167,7 @@ class SyncWorker:
                     ),
                 )
                 article_fact_rows = None
-                if self.worker_config.api_type == "finance_sales_report_details":
-                    article_fact_rows = self.repository.load_article_daily_facts(self.worker_config.account_id)
+                article_fact_rows = self.repository.load_article_daily_facts(self.worker_config.account_id)
             elif self.worker_config.api_type == "warehouse_remains":
                 result = run_warehouse_remains_sync(
                     worker=self.worker_config,

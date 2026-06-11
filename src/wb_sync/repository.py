@@ -313,6 +313,22 @@ class SyncRepository:
             conn.commit()
         return len(records)
 
+    def get_existing_weekly_report_ids(self, account_id: int, report_ids: Iterable[int]) -> set[int]:
+        report_ids = [int(report_id) for report_id in report_ids]
+        if not report_ids:
+            return set()
+        with self.db.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                select distinct report_id
+                from wb_finance_sales_report_weekly
+                where account_id = %s
+                  and report_id = any(%s)
+                """,
+                (account_id, report_ids),
+            )
+            return {int(row["report_id"]) for row in cur.fetchall()}
+
     def load_article_daily_facts(self, account_id: int) -> int:
         with self.db.connect() as conn, conn.cursor() as cur:
             cur.execute(
