@@ -434,7 +434,8 @@ select
     ) as profit
 from aggregated
 left join {schema}.v_dic_cost_price_current current_cost
-    on current_cost.vendor_code = aggregated.vendor_code;
+    on current_cost.account_id = aggregated.account_id
+   and current_cost.vendor_code = aggregated.vendor_code;
 """
 
 
@@ -470,7 +471,8 @@ def _cost_price_current_view_sql(schema: str, view_name: str) -> str:
 drop view if exists {schema}.{view_name};
 
 create view {schema}.{view_name} as
-select distinct on (d.vendor_code)
+select distinct on (d.account_id, d.vendor_code)
+    d.account_id,
     d.vendor_code,
     d.cost,
     d.valid_from,
@@ -479,7 +481,7 @@ select distinct on (d.vendor_code)
     d.updated_at
 from {schema}.dic_cost_price d
 where d.valid_to is null
-order by d.vendor_code, d.valid_from desc, d.id desc;
+order by d.account_id, d.vendor_code, d.valid_from desc, d.id desc;
 """
 
 
@@ -515,7 +517,8 @@ with base as (
         end as unit_cost
     from {schema}.{table_name} d
     left join {schema}.v_dic_cost_price_current cp
-        on cp.vendor_code = nullif(d.vendor_code, '')
+        on cp.account_id = d.account_id
+       and cp.vendor_code = nullif(d.vendor_code, '')
 )
 select
     base.*,
@@ -1182,17 +1185,30 @@ create table if not exists {schema}.wb_sync_runs (
 
 create table if not exists {schema}.dic_cost_price (
     id bigserial primary key,
+    account_id bigint null references {schema}.wb_accounts(id) on delete cascade,
     vendor_code text not null,
     cost numeric(18, 6) not null,
     valid_from timestamptz not null default now(),
     valid_to timestamptz null,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
-    unique (vendor_code, valid_from)
+    unique (account_id, vendor_code, valid_from)
 );
 
+alter table {schema}.dic_cost_price
+    add column if not exists account_id bigint null references {schema}.wb_accounts(id) on delete cascade;
+
+alter table {schema}.dic_cost_price
+    drop constraint if exists dic_cost_price_vendor_code_valid_from_key;
+alter table {schema}.dic_cost_price
+    drop constraint if exists dic_cost_price_account_vendor_valid_from_key;
+alter table {schema}.dic_cost_price
+    add constraint dic_cost_price_account_vendor_valid_from_key
+    unique (account_id, vendor_code, valid_from);
+
+drop index if exists dic_cost_price_vendor_current_idx;
 create index if not exists dic_cost_price_vendor_current_idx
-    on {schema}.dic_cost_price (vendor_code, valid_from desc)
+    on {schema}.dic_cost_price (account_id, vendor_code, valid_from desc)
     where valid_to is null;
 
 alter table {schema}.wb_sync_workers
@@ -1324,23 +1340,64 @@ create index if not exists wb_warehouse_remains_account_nm_idx
 
 {_finance_raw_table_sql(schema, "wb_finance_sales_report_weekly")}
 
-insert into {schema}.dic_cost_price (vendor_code, cost, valid_from)
-select distinct src.vendor_code, 999999999::numeric(18, 6), now()
-from (
-    select nullif(vendor_code, '') as vendor_code
+insert into {schema}.dic_cost_price (
+    account_id,
+    vendor_code,
+    cost,
+    valid_from,
+    valid_to,
+    created_at,
+    updated_at
+)
+select
+    src.account_id,
+    legacy.vendor_code,
+    legacy.cost,
+    legacy.valid_from,
+    legacy.valid_to,
+    legacy.created_at,
+    legacy.updated_at
+from {schema}.dic_cost_price legacy
+join (
+    select distinct account_id, nullif(vendor_code, '') as vendor_code
     from {schema}.wb_finance_sales_report_details
     union
-    select nullif(vendor_code, '') as vendor_code
+    select distinct account_id, nullif(vendor_code, '') as vendor_code
+    from {schema}.wb_finance_sales_report_weekly
+) src
+    on src.vendor_code = legacy.vendor_code
+where legacy.account_id is null
+  and src.vendor_code is not null
+  and not exists (
+      select 1
+      from {schema}.dic_cost_price d
+      where d.account_id = src.account_id
+        and d.vendor_code = legacy.vendor_code
+        and d.valid_from = legacy.valid_from
+  )
+on conflict (account_id, vendor_code, valid_from) do nothing;
+
+delete from {schema}.dic_cost_price
+where account_id is null;
+
+insert into {schema}.dic_cost_price (account_id, vendor_code, cost, valid_from)
+select distinct src.account_id, src.vendor_code, 999999999::numeric(18, 6), now()
+from (
+    select distinct account_id, nullif(vendor_code, '') as vendor_code
+    from {schema}.wb_finance_sales_report_details
+    union
+    select distinct account_id, nullif(vendor_code, '') as vendor_code
     from {schema}.wb_finance_sales_report_weekly
 ) src
 where src.vendor_code is not null
   and not exists (
       select 1
       from {schema}.dic_cost_price d
-      where d.vendor_code = src.vendor_code
+      where d.account_id = src.account_id
+        and d.vendor_code = src.vendor_code
         and d.valid_to is null
   )
-on conflict (vendor_code, valid_from) do nothing;
+on conflict (account_id, vendor_code, valid_from) do nothing;
 
 drop view if exists {schema}.wb_finance_sales_report_weekly_enriched;
 drop view if exists {schema}.wb_finance_weekly_summary_by_sku;

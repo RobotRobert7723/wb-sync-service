@@ -71,10 +71,14 @@ def test_schema_contains_cost_price_dictionary_and_enriched_weekly_views():
     schema_sql = build_schema_sql("wb_test")
 
     assert "create table if not exists wb_test.dic_cost_price" in schema_sql
+    assert "account_id bigint null references wb_test.wb_accounts(id) on delete cascade" in schema_sql
     assert "vendor_code text not null" in schema_sql
     assert "cost numeric(18, 6) not null" in schema_sql
+    assert "unique (account_id, vendor_code, valid_from)" in schema_sql
     assert "create view wb_test.v_dic_cost_price_current as" in schema_sql
     assert "create view wb_test.wb_finance_sales_report_weekly_enriched as" in schema_sql
     assert "create view wb_test.wb_finance_weekly_summary_by_sku as" in schema_sql
+    assert "on current_cost.account_id = aggregated.account_id" in schema_sql
+    assert "on cp.account_id = d.account_id" in schema_sql
     assert " as cost," in schema_sql
     assert " as profit" in schema_sql
