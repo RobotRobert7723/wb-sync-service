@@ -329,6 +329,29 @@ class SyncRepository:
             )
             return {int(row["report_id"]) for row in cur.fetchall()}
 
+    def ensure_cost_price_entries(self, vendor_codes: Iterable[str]) -> int:
+        normalized_codes = sorted({str(code).strip() for code in vendor_codes if code is not None and str(code).strip()})
+        if not normalized_codes:
+            return 0
+        with self.db.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into dic_cost_price (vendor_code, cost, valid_from)
+                select candidate.vendor_code, %s, %s
+                from unnest(%s::text[]) as candidate(vendor_code)
+                where not exists (
+                    select 1
+                    from dic_cost_price existing
+                    where existing.vendor_code = candidate.vendor_code
+                      and existing.valid_to is null
+                )
+                """,
+                (Decimal("-999999999"), utcnow(), normalized_codes),
+            )
+            inserted = cur.rowcount
+            conn.commit()
+        return inserted
+
     def load_article_daily_facts(self, account_id: int) -> int:
         with self.db.connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -359,7 +382,9 @@ class SyncRepository:
             return rows_inserted
 
     def _upsert_finance_rows(self, table_name: str, account_id: int, rows: Iterable[dict[str, object]]) -> int:
-        records = [self._normalize_finance_sales_report_detail(account_id, row) for row in rows]
+        rows_list = list(rows)
+        self.ensure_cost_price_entries(row.get("vendorCode") for row in rows_list)
+        records = [self._normalize_finance_sales_report_detail(account_id, row) for row in rows_list]
         if not records:
             return 0
         columns = list(records[0].keys())

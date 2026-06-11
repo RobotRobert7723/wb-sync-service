@@ -284,6 +284,7 @@ def _finance_summary_by_sku_view_sql(schema: str, view_name: str, table_name: st
         "\u041a\u043e\u0440\u0440\u0435\u043a\u0446\u0438\u044f \u043f\u0440\u043e\u0434\u0430\u0436"
     )
     report_type_main = "\u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439"
+    missing_cost_value = "-999999999"
     return f"""
 drop view if exists {schema}.{view_name};
 
@@ -323,7 +324,8 @@ with localized as (
         d.rebill_logistic_cost
     from {schema}.{table_name} d
     join {schema}.wb_accounts a on a.id = d.account_id
-)
+),
+aggregated as (
 select
     account_id,
     account_code,
@@ -416,7 +418,23 @@ group by
     account_name,
     report_id,
     sku,
-    currency;
+    currency
+)
+select
+    aggregated.*,
+    case
+        when aggregated.vendor_code = 'N/A' then 0::numeric(18, 6)
+        else coalesce(current_cost.cost, {missing_cost_value}::numeric(18, 6)) * aggregated.quantity::numeric
+    end as cost,
+    aggregated.total_to_pay - (
+        case
+            when aggregated.vendor_code = 'N/A' then 0::numeric(18, 6)
+            else coalesce(current_cost.cost, {missing_cost_value}::numeric(18, 6)) * aggregated.quantity::numeric
+        end
+    ) as profit
+from aggregated
+left join {schema}.v_dic_cost_price_current current_cost
+    on current_cost.vendor_code = aggregated.vendor_code;
 """
 
 
@@ -444,6 +462,94 @@ select
     case when sku = 'N/A' then 'N/A' else coalesce(max(nullif(tech_size, '')), 'N/A') end as tech_size
 from normalized
 group by sku;
+"""
+
+
+def _cost_price_current_view_sql(schema: str, view_name: str) -> str:
+    return f"""
+drop view if exists {schema}.{view_name};
+
+create view {schema}.{view_name} as
+select distinct on (d.vendor_code)
+    d.vendor_code,
+    d.cost,
+    d.valid_from,
+    d.valid_to,
+    d.created_at,
+    d.updated_at
+from {schema}.dic_cost_price d
+where d.valid_to is null
+order by d.vendor_code, d.valid_from desc, d.id desc;
+"""
+
+
+def _finance_sales_report_weekly_enriched_view_sql(schema: str, view_name: str, table_name: str) -> str:
+    sale_operation = "\u041f\u0440\u043e\u0434\u0430\u0436\u0430"
+    return_operation = "\u0412\u043e\u0437\u0432\u0440\u0430\u0442"
+    voluntary_return_compensation = (
+        "\u0414\u043e\u0431\u0440\u043e\u0432\u043e\u043b\u044c\u043d\u0430\u044f "
+        "\u043a\u043e\u043c\u043f\u0435\u043d\u0441\u0430\u0446\u0438\u044f "
+        "\u043f\u0440\u0438 \u0432\u043e\u0437\u0432\u0440\u0430\u0442\u0435"
+    )
+    acquiring_adjustment_operation = (
+        "\u041a\u043e\u0440\u0440\u0435\u043a\u0442\u0438\u0440\u043e\u0432\u043a\u0430 "
+        "\u044d\u043a\u0432\u0430\u0439\u0440\u0438\u043d\u0433\u0430"
+    )
+    returns_correction_operation = (
+        "\u041a\u043e\u0440\u0440\u0435\u043a\u0446\u0438\u044f \u0432\u043e\u0437\u0432\u0440\u0430\u0442\u043e\u0432"
+    )
+    sales_correction_operation = (
+        "\u041a\u043e\u0440\u0440\u0435\u043a\u0446\u0438\u044f \u043f\u0440\u043e\u0434\u0430\u0436"
+    )
+    missing_cost_value = "-999999999"
+    return f"""
+drop view if exists {schema}.{view_name};
+
+create view {schema}.{view_name} as
+with base as (
+    select
+        d.*,
+        case
+            when nullif(d.vendor_code, '') is null then 0::numeric(18, 6)
+            else coalesce(cp.cost, {missing_cost_value}::numeric(18, 6))
+        end as unit_cost
+    from {schema}.{table_name} d
+    left join {schema}.v_dic_cost_price_current cp
+        on cp.vendor_code = nullif(d.vendor_code, '')
+)
+select
+    base.*,
+    case
+        when base.seller_oper_name = '{sale_operation}' then coalesce(base.quantity, 0)::numeric * base.unit_cost
+        when base.seller_oper_name = '{return_operation}' then -coalesce(base.quantity, 0)::numeric * base.unit_cost
+        else 0::numeric(18, 6)
+    end as cost,
+    (
+        case
+            when base.seller_oper_name = '{sale_operation}' then coalesce(base.for_pay, 0)
+            when base.seller_oper_name = '{return_operation}' then -coalesce(base.for_pay, 0)
+            when base.seller_oper_name = '{voluntary_return_compensation}' then coalesce(base.for_pay, 0)
+            when base.seller_oper_name = '{returns_correction_operation}' then coalesce(base.for_pay, 0)
+            when base.seller_oper_name = '{sales_correction_operation}' then -coalesce(base.for_pay, 0)
+            when base.seller_oper_name = '{acquiring_adjustment_operation}' then coalesce(base.for_pay, 0)
+            else 0::numeric(18, 6)
+        end
+        - coalesce(base.delivery_service, 0)
+        - coalesce(base.paid_storage, 0)
+        - coalesce(base.paid_acceptance, 0)
+        - coalesce(base.deduction, 0)
+        - coalesce(base.penalty, 0)
+        - coalesce(base.cashback_commission_change, 0)
+        + coalesce(base.cashback_amount, 0)
+        + coalesce(base.additional_payment, 0)
+    ) - (
+        case
+            when base.seller_oper_name = '{sale_operation}' then coalesce(base.quantity, 0)::numeric * base.unit_cost
+            when base.seller_oper_name = '{return_operation}' then -coalesce(base.quantity, 0)::numeric * base.unit_cost
+            else 0::numeric(18, 6)
+        end
+    ) as profit
+from base;
 """
 
 
@@ -921,6 +1027,102 @@ on conflict (fact_date, account_id, nm_id) do nothing;
 """
 
 
+def _browser_etl_schema_sql(schema: str) -> str:
+    return f"""
+create table if not exists {schema}.browser_sources (
+    id bigserial primary key,
+    source_code text not null unique,
+    source_name text not null,
+    url text not null,
+    source_type text not null default 'product_page'
+        check (source_type in ('product_page', 'wildberries_product')),
+    enabled boolean not null default true,
+    schedule_seconds integer not null check (schedule_seconds > 0),
+    extraction_config jsonb not null default '{{}}'::jsonb,
+    revision integer not null default 1,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create table if not exists {schema}.browser_etl_state (
+    source_id bigint primary key references {schema}.browser_sources(id) on delete cascade,
+    last_started_at timestamptz null,
+    last_finished_at timestamptz null,
+    last_success_at timestamptz null,
+    last_error_at timestamptz null,
+    last_error_message text null,
+    heartbeat_at timestamptz null,
+    run_id text null,
+    status text null
+);
+
+create table if not exists {schema}.browser_etl_runs (
+    id bigserial primary key,
+    source_id bigint not null references {schema}.browser_sources(id) on delete cascade,
+    run_id text not null,
+    started_at timestamptz not null,
+    finished_at timestamptz null,
+    status text not null,
+    rows_written integer not null default 0,
+    error_message text null
+);
+
+create index if not exists browser_etl_runs_source_started_idx
+    on {schema}.browser_etl_runs (source_id, started_at desc);
+
+create table if not exists {schema}.browser_etl_snapshots (
+    id bigserial primary key,
+    source_id bigint not null references {schema}.browser_sources(id) on delete cascade,
+    source_code text not null,
+    observed_at timestamptz not null,
+    requested_url text not null,
+    final_url text not null,
+    page_title text null,
+    item_key text null,
+    item_name text null,
+    price numeric(18, 2) null,
+    wallet_price numeric(18, 2) null,
+    old_price numeric(18, 2) null,
+    currency text null,
+    availability text null,
+    html_sha256 text null,
+    raw_payload jsonb not null,
+    created_at timestamptz not null default now()
+);
+
+alter table {schema}.browser_etl_snapshots
+    add column if not exists wallet_price numeric(18, 2) null;
+
+create index if not exists browser_etl_snapshots_source_observed_idx
+    on {schema}.browser_etl_snapshots (source_id, observed_at desc);
+
+create index if not exists browser_etl_snapshots_item_observed_idx
+    on {schema}.browser_etl_snapshots (source_id, item_key, observed_at desc);
+
+drop view if exists {schema}.v_browser_etl_latest_prices;
+
+create view {schema}.v_browser_etl_latest_prices as
+select distinct on (s.source_id)
+    s.source_id,
+    bs.source_code,
+    bs.source_name,
+    bs.source_type,
+    s.item_key,
+    s.item_name,
+    s.price,
+    s.wallet_price,
+    s.old_price,
+    s.currency,
+    s.availability,
+    s.observed_at,
+    s.final_url,
+    s.page_title
+from {schema}.browser_etl_snapshots s
+join {schema}.browser_sources bs on bs.id = s.source_id
+order by s.source_id, s.observed_at desc, s.id desc;
+"""
+
+
 def build_schema_sql(schema: str) -> str:
     finance_api_types = "'orders', 'sales', 'finance_sales_report_details', 'finance_sales_report_weekly', 'warehouse_remains'"
     return f"""
@@ -977,6 +1179,21 @@ create table if not exists {schema}.wb_sync_runs (
     rows_written integer not null default 0,
     error_message text null
 );
+
+create table if not exists {schema}.dic_cost_price (
+    id bigserial primary key,
+    vendor_code text not null,
+    cost numeric(18, 6) not null,
+    valid_from timestamptz not null default now(),
+    valid_to timestamptz null,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    unique (vendor_code, valid_from)
+);
+
+create index if not exists dic_cost_price_vendor_current_idx
+    on {schema}.dic_cost_price (vendor_code, valid_from desc)
+    where valid_to is null;
 
 alter table {schema}.wb_sync_workers
     drop constraint if exists wb_sync_workers_api_type_check;
@@ -1107,15 +1324,39 @@ create index if not exists wb_warehouse_remains_account_nm_idx
 
 {_finance_raw_table_sql(schema, "wb_finance_sales_report_weekly")}
 
+insert into {schema}.dic_cost_price (vendor_code, cost, valid_from)
+select distinct src.vendor_code, -999999999::numeric(18, 6), now()
+from (
+    select nullif(vendor_code, '') as vendor_code
+    from {schema}.wb_finance_sales_report_details
+    union
+    select nullif(vendor_code, '') as vendor_code
+    from {schema}.wb_finance_sales_report_weekly
+) src
+where src.vendor_code is not null
+  and not exists (
+      select 1
+      from {schema}.dic_cost_price d
+      where d.vendor_code = src.vendor_code
+        and d.valid_to is null
+  )
+on conflict (vendor_code, valid_from) do nothing;
+
+{_cost_price_current_view_sql(schema, "v_dic_cost_price_current")}
+
 {_finance_summary_view_sql(schema, "wb_finance_daily_summary", "wb_finance_sales_report_details")}
 
 {_finance_summary_view_sql(schema, "wb_finance_weekly_summary", "wb_finance_sales_report_weekly")}
 
 {_finance_summary_by_sku_view_sql(schema, "wb_finance_weekly_summary_by_sku", "wb_finance_sales_report_weekly")}
 
+{_finance_sales_report_weekly_enriched_view_sql(schema, "wb_finance_sales_report_weekly_enriched", "wb_finance_sales_report_weekly")}
+
 {_finance_sku_reference_view_sql(schema, "wb_finance_weekly_sku_reference", "wb_finance_sales_report_weekly")}
 
 {_finance_sales_product_details_view_sql(schema, "v_wb_finance_sales_product_details", "wb_finance_sales_report_details")}
 
 {_article_daily_facts_table_sql(schema, "wb_article_daily_facts")}
+
+{_browser_etl_schema_sql(schema)}
 """

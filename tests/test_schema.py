@@ -51,3 +51,30 @@ def test_schema_contains_finance_sales_product_details_view():
     assert "'order_id'::text" in schema_sql
     assert "'order_uid'::text" in schema_sql
     assert "'shk_id'::text" in schema_sql
+
+
+def test_schema_contains_browser_etl_tables_and_latest_view():
+    schema_sql = build_schema_sql("wb_test")
+
+    assert "create table if not exists wb_test.browser_sources" in schema_sql
+    assert "create table if not exists wb_test.browser_etl_state" in schema_sql
+    assert "create table if not exists wb_test.browser_etl_runs" in schema_sql
+    assert "create table if not exists wb_test.browser_etl_snapshots" in schema_sql
+    assert "source_type in ('product_page', 'wildberries_product')" in schema_sql
+    assert "wallet_price numeric(18, 2) null" in schema_sql
+    assert "add column if not exists wallet_price" in schema_sql
+    assert "create view wb_test.v_browser_etl_latest_prices as" in schema_sql
+    assert "browser_etl_snapshots_source_observed_idx" in schema_sql
+
+
+def test_schema_contains_cost_price_dictionary_and_enriched_weekly_views():
+    schema_sql = build_schema_sql("wb_test")
+
+    assert "create table if not exists wb_test.dic_cost_price" in schema_sql
+    assert "vendor_code text not null" in schema_sql
+    assert "cost numeric(18, 6) not null" in schema_sql
+    assert "create view wb_test.v_dic_cost_price_current as" in schema_sql
+    assert "create view wb_test.wb_finance_sales_report_weekly_enriched as" in schema_sql
+    assert "create view wb_test.wb_finance_weekly_summary_by_sku as" in schema_sql
+    assert " as cost," in schema_sql
+    assert " as profit" in schema_sql
