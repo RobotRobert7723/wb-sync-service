@@ -346,7 +346,7 @@ class SyncRepository:
                       and existing.valid_to is null
                 )
                 """,
-                (Decimal("-999999999"), utcnow(), normalized_codes),
+                (Decimal("999999999"), utcnow(), normalized_codes),
             )
             inserted = cur.rowcount
             conn.commit()

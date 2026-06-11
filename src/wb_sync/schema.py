@@ -284,7 +284,7 @@ def _finance_summary_by_sku_view_sql(schema: str, view_name: str, table_name: st
         "\u041a\u043e\u0440\u0440\u0435\u043a\u0446\u0438\u044f \u043f\u0440\u043e\u0434\u0430\u0436"
     )
     report_type_main = "\u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439"
-    missing_cost_value = "-999999999"
+    missing_cost_value = "999999999"
     return f"""
 drop view if exists {schema}.{view_name};
 
@@ -501,7 +501,7 @@ def _finance_sales_report_weekly_enriched_view_sql(schema: str, view_name: str, 
     sales_correction_operation = (
         "\u041a\u043e\u0440\u0440\u0435\u043a\u0446\u0438\u044f \u043f\u0440\u043e\u0434\u0430\u0436"
     )
-    missing_cost_value = "-999999999"
+    missing_cost_value = "999999999"
     return f"""
 drop view if exists {schema}.{view_name};
 
@@ -1325,7 +1325,7 @@ create index if not exists wb_warehouse_remains_account_nm_idx
 {_finance_raw_table_sql(schema, "wb_finance_sales_report_weekly")}
 
 insert into {schema}.dic_cost_price (vendor_code, cost, valid_from)
-select distinct src.vendor_code, -999999999::numeric(18, 6), now()
+select distinct src.vendor_code, 999999999::numeric(18, 6), now()
 from (
     select nullif(vendor_code, '') as vendor_code
     from {schema}.wb_finance_sales_report_details
