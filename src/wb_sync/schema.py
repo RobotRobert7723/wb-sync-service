@@ -1342,6 +1342,11 @@ where src.vendor_code is not null
   )
 on conflict (vendor_code, valid_from) do nothing;
 
+drop view if exists {schema}.wb_finance_sales_report_weekly_enriched;
+drop view if exists {schema}.wb_finance_weekly_summary_by_sku;
+drop view if exists {schema}.wb_finance_weekly_sku_reference;
+drop view if exists {schema}.v_dic_cost_price_current;
+
 {_cost_price_current_view_sql(schema, "v_dic_cost_price_current")}
 
 {_finance_summary_view_sql(schema, "wb_finance_daily_summary", "wb_finance_sales_report_details")}
