@@ -81,4 +81,6 @@ def test_schema_contains_cost_price_dictionary_and_enriched_weekly_views():
     assert "on current_cost.account_id = aggregated.account_id" in schema_sql
     assert "on cp.account_id = d.account_id" in schema_sql
     assert " as cost," in schema_sql
+    assert " as total_to_pay" in schema_sql
+    assert "calculated.total_to_pay - calculated.cost as profit" in schema_sql
     assert " as profit" in schema_sql

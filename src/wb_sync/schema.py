@@ -519,7 +519,8 @@ with base as (
     left join {schema}.v_dic_cost_price_current cp
         on cp.account_id = d.account_id
        and cp.vendor_code = nullif(d.vendor_code, '')
-)
+),
+calculated as (
 select
     base.*,
     case
@@ -545,14 +546,13 @@ select
         - coalesce(base.cashback_commission_change, 0)
         + coalesce(base.cashback_amount, 0)
         + coalesce(base.additional_payment, 0)
-    ) - (
-        case
-            when base.seller_oper_name = '{sale_operation}' then coalesce(base.quantity, 0)::numeric * base.unit_cost
-            when base.seller_oper_name = '{return_operation}' then -coalesce(base.quantity, 0)::numeric * base.unit_cost
-            else 0::numeric(18, 6)
-        end
-    ) as profit
-from base;
+    ) as total_to_pay
+from base
+)
+select
+    calculated.*,
+    calculated.total_to_pay - calculated.cost as profit
+from calculated;
 """
 
 
