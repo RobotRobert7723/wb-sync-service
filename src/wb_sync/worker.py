@@ -8,6 +8,7 @@ from typing import Callable
 from wb_sync.models import WorkerConfig
 from wb_sync.repository import SyncRepository
 from wb_sync.sync_logic import (
+    run_fbw_supplies_sync,
     run_finance_sales_report_sync,
     run_finance_sales_report_weekly_sync,
     run_incremental_sync,
@@ -57,6 +58,8 @@ class SyncWorker:
             return self.repository.upsert_sales
         if self.worker_config.api_type == "warehouse_remains":
             return self.repository.replace_warehouse_remains
+        if self.worker_config.api_type == "fbw_supplies":
+            return self.repository.upsert_fbw_supplies
         if self.worker_config.api_type == "finance_sales_report_weekly":
             return self.repository.upsert_finance_sales_report_weekly
         return self.repository.upsert_finance_sales_report_details
@@ -121,6 +124,55 @@ class SyncWorker:
 
         return _fetch
 
+    def _limited_fbw_supplies_fetcher(self):
+        def _fetch(token, date_from, date_to, stop_event, limit=1000):
+            self.rate_limiter.wait(self.stop_event)
+            return self.api_client.fetch_fbw_supplies(
+                token,
+                date_from,
+                date_to,
+                stop_event,
+                limit=limit,
+            )
+
+        return _fetch
+
+    def _limited_fbw_supply_details_fetcher(self):
+        def _fetch(token, supply_id, is_preorder_id, stop_event):
+            self.rate_limiter.wait(self.stop_event)
+            return self.api_client.fetch_fbw_supply_details(
+                token,
+                supply_id,
+                is_preorder_id,
+                stop_event,
+            )
+
+        return _fetch
+
+    def _limited_fbw_supply_goods_fetcher(self):
+        def _fetch(token, supply_id, is_preorder_id, stop_event, limit=1000):
+            self.rate_limiter.wait(self.stop_event)
+            return self.api_client.fetch_fbw_supply_goods(
+                token,
+                supply_id,
+                is_preorder_id,
+                stop_event,
+                limit=limit,
+            )
+
+        return _fetch
+
+    def _limited_fbw_supply_package_fetcher(self):
+        def _fetch(token, supply_id, stop_event):
+            self.rate_limiter.wait(self.stop_event)
+            return self.api_client.fetch_fbw_supply_package(
+                token,
+                supply_id,
+                stop_event,
+            )
+
+        return _fetch
+
     def run_once(self) -> bool:
         run_id = str(uuid.uuid4())
         logger_extra = {
@@ -173,6 +225,17 @@ class SyncWorker:
                     worker=self.worker_config,
                     stop_event=self.stop_event,
                     fetch_rows=self._limited_warehouse_fetcher(),
+                    write_rows=self._writer(),
+                )
+                article_fact_rows = None
+            elif self.worker_config.api_type == "fbw_supplies":
+                result = run_fbw_supplies_sync(
+                    worker=self.worker_config,
+                    stop_event=self.stop_event,
+                    fetch_supplies=self._limited_fbw_supplies_fetcher(),
+                    fetch_details=self._limited_fbw_supply_details_fetcher(),
+                    fetch_goods=self._limited_fbw_supply_goods_fetcher(),
+                    fetch_package=self._limited_fbw_supply_package_fetcher(),
                     write_rows=self._writer(),
                 )
                 article_fact_rows = None

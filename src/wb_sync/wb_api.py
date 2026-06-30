@@ -22,6 +22,9 @@ DATETIME_FIELDS = {
     "dateFrom",
     "dateTo",
     "createDate",
+    "supplyDate",
+    "factDate",
+    "updatedDate",
     "fixTariffDateFrom",
     "fixTariffDateTo",
     "orderDt",
@@ -59,6 +62,7 @@ class WbApiClient:
     BASE_URL = "https://statistics-api.wildberries.ru"
     FINANCE_BASE_URL = "https://finance-api.wildberries.ru"
     ANALYTICS_BASE_URL = "https://seller-analytics-api.wildberries.ru"
+    SUPPLIES_BASE_URL = "https://supplies-api.wildberries.ru"
 
     def __init__(self, config: WbApiConfig):
         self.config = config
@@ -170,12 +174,89 @@ class WbApiClient:
         download_url = f"{self.ANALYTICS_BASE_URL}/api/v1/warehouse_remains/tasks/{task_id}/download"
         return self._request_json(download_url, headers, stop_event)
 
+    def fetch_fbw_supplies(
+        self,
+        token: str,
+        date_from: str,
+        date_to: str,
+        stop_event: threading.Event,
+        limit: int = 1000,
+        date_type: str = "createDate",
+    ) -> list[dict[str, Any]]:
+        headers = {
+            "Authorization": token,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "dates": [{"from": date_from, "till": date_to, "type": date_type}],
+            "statusIDs": [1, 2, 3, 4, 5, 6],
+        }
+        supplies: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            query = urlencode({"limit": limit, "offset": offset})
+            url = f"{self.SUPPLIES_BASE_URL}/api/v1/supplies?{query}"
+            page = self._request_json(url, headers, stop_event, payload=payload) or []
+            supplies.extend(page)
+            if len(page) < limit:
+                return supplies
+            offset += limit
+
+    def fetch_fbw_supply_details(
+        self,
+        token: str,
+        supply_id: int,
+        is_preorder_id: bool,
+        stop_event: threading.Event,
+    ) -> dict[str, Any] | None:
+        headers = {"Authorization": token}
+        query = urlencode({"isPreorderID": str(is_preorder_id).lower()})
+        url = f"{self.SUPPLIES_BASE_URL}/api/v1/supplies/{supply_id}?{query}"
+        return self._request_object(url, headers, stop_event, not_found_none=True)
+
+    def fetch_fbw_supply_goods(
+        self,
+        token: str,
+        supply_id: int,
+        is_preorder_id: bool,
+        stop_event: threading.Event,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        headers = {"Authorization": token}
+        goods: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            query = urlencode(
+                {
+                    "limit": limit,
+                    "offset": offset,
+                    "isPreorderID": str(is_preorder_id).lower(),
+                }
+            )
+            url = f"{self.SUPPLIES_BASE_URL}/api/v1/supplies/{supply_id}/goods?{query}"
+            page = self._request_json(url, headers, stop_event, not_found_none=True) or []
+            goods.extend(page)
+            if len(page) < limit:
+                return goods
+            offset += limit
+
+    def fetch_fbw_supply_package(
+        self,
+        token: str,
+        supply_id: int,
+        stop_event: threading.Event,
+    ) -> list[dict[str, Any]]:
+        headers = {"Authorization": token}
+        url = f"{self.SUPPLIES_BASE_URL}/api/v1/supplies/{supply_id}/package"
+        return self._request_json(url, headers, stop_event, not_found_none=True) or []
+
     def _request_json(
         self,
         url: str,
         headers: dict[str, str],
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
+        not_found_none: bool = False,
     ) -> list[dict[str, Any]] | None:
         attempt = 0
         while True:
@@ -195,6 +276,8 @@ class WbApiClient:
             except HTTPError as exc:
                 if exc.code == 204:
                     return None
+                if exc.code == 404 and not_found_none:
+                    return None
                 if exc.code in {429, 500, 502, 503, 504} and attempt < self.config.retry_attempts:
                     self._sleep_backoff(attempt, stop_event)
                     continue
@@ -212,6 +295,7 @@ class WbApiClient:
         headers: dict[str, str],
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
+        not_found_none: bool = False,
     ) -> dict[str, Any] | None:
         attempt = 0
         while True:
@@ -230,6 +314,8 @@ class WbApiClient:
                 return data_obj
             except HTTPError as exc:
                 if exc.code == 204:
+                    return None
+                if exc.code == 404 and not_found_none:
                     return None
                 if exc.code in {429, 500, 502, 503, 504} and attempt < self.config.retry_attempts:
                     self._sleep_backoff(attempt, stop_event)

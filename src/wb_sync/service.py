@@ -30,6 +30,8 @@ class DefaultWorkerFactory(WorkerFactory):
             api_group = "finance"
         elif config.api_type == "warehouse_remains":
             api_group = "analytics"
+        elif config.api_type == "fbw_supplies":
+            api_group = "supplies"
         else:
             api_group = "statistics"
         return (config.account_id, api_group)

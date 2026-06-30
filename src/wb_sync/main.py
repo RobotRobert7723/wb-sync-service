@@ -11,7 +11,7 @@ from wb_sync.schema import build_schema_sql
 from wb_sync.service import build_dispatcher, run_workers_once
 
 
-API_TYPES = ("orders", "sales", "finance_sales_report_details", "finance_sales_report_weekly", "warehouse_remains")
+API_TYPES = ("orders", "sales", "finance_sales_report_details", "finance_sales_report_weekly", "warehouse_remains", "fbw_supplies")
 
 
 def ensure_database_objects(app_config: AppConfig) -> None:

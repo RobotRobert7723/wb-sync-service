@@ -84,3 +84,17 @@ def test_schema_contains_cost_price_dictionary_and_enriched_weekly_views():
     assert " as total_to_pay" in schema_sql
     assert "calculated.total_to_pay - calculated.cost as profit" in schema_sql
     assert " as profit" in schema_sql
+
+
+def test_schema_contains_fbw_supplies_tables():
+    schema_sql = build_schema_sql("wb_test")
+
+    assert "'fbw_supplies'" in schema_sql
+    assert "create table if not exists wb_test.wb_fbw_supplies" in schema_sql
+    assert "create table if not exists wb_test.wb_fbw_supply_details" in schema_sql
+    assert "create table if not exists wb_test.wb_fbw_supply_goods" in schema_sql
+    assert "create table if not exists wb_test.wb_fbw_supply_packages" in schema_sql
+    assert "create table if not exists wb_test.wb_fbw_supply_package_barcodes" in schema_sql
+    assert "unique (account_id, supply_key)" in schema_sql
+    assert "package_code text not null" in schema_sql
+    assert "raw_payload jsonb not null" in schema_sql

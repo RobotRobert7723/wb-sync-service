@@ -485,6 +485,130 @@ order by d.account_id, d.vendor_code, d.valid_from desc, d.id desc;
 """
 
 
+def _fbw_supplies_schema_sql(schema: str) -> str:
+    return f"""
+create table if not exists {schema}.wb_fbw_supplies (
+    id bigserial primary key,
+    account_id bigint not null references {schema}.wb_accounts(id) on delete cascade,
+    supply_key text not null,
+    supply_id bigint null,
+    preorder_id bigint null,
+    phone text null,
+    create_date timestamptz null,
+    supply_date timestamptz null,
+    fact_date timestamptz null,
+    updated_date timestamptz null,
+    status_id integer null,
+    box_type_id integer null,
+    is_box_on_pallet boolean null,
+    raw_payload jsonb not null,
+    updated_at timestamptz not null default now(),
+    unique (account_id, supply_key)
+);
+
+create index if not exists wb_fbw_supplies_account_status_idx
+    on {schema}.wb_fbw_supplies (account_id, status_id, updated_date desc);
+
+create index if not exists wb_fbw_supplies_account_create_idx
+    on {schema}.wb_fbw_supplies (account_id, create_date desc);
+
+create table if not exists {schema}.wb_fbw_supply_details (
+    id bigserial primary key,
+    account_id bigint not null references {schema}.wb_accounts(id) on delete cascade,
+    supply_key text not null,
+    supply_id bigint null,
+    preorder_id bigint null,
+    phone text null,
+    status_id integer null,
+    box_type_id integer null,
+    create_date timestamptz null,
+    supply_date timestamptz null,
+    fact_date timestamptz null,
+    updated_date timestamptz null,
+    warehouse_id bigint null,
+    warehouse_name text null,
+    actual_warehouse_id bigint null,
+    actual_warehouse_name text null,
+    transit_warehouse_id bigint null,
+    transit_warehouse_name text null,
+    acceptance_cost numeric(18,6) null,
+    paid_acceptance_coefficient numeric(18,6) null,
+    reject_reason text null,
+    supplier_assign_name text null,
+    storage_coef text null,
+    delivery_coef text null,
+    quantity integer null,
+    ready_for_sale_quantity integer null,
+    accepted_quantity integer null,
+    unloading_quantity integer null,
+    depersonalized_quantity integer null,
+    is_box_on_pallet boolean null,
+    raw_payload jsonb not null,
+    updated_at timestamptz not null default now(),
+    unique (account_id, supply_key)
+);
+
+create index if not exists wb_fbw_supply_details_account_warehouse_idx
+    on {schema}.wb_fbw_supply_details (account_id, warehouse_id);
+
+create table if not exists {schema}.wb_fbw_supply_goods (
+    id bigserial primary key,
+    account_id bigint not null references {schema}.wb_accounts(id) on delete cascade,
+    supply_key text not null,
+    supply_id bigint null,
+    preorder_id bigint null,
+    barcode text null,
+    vendor_code text null,
+    nm_id bigint null,
+    need_kiz boolean null,
+    tnved text null,
+    tech_size text null,
+    color text null,
+    supplier_box_amount integer null,
+    quantity integer null,
+    ready_for_sale_quantity integer null,
+    unloading_quantity integer null,
+    accepted_quantity integer null,
+    raw_payload jsonb not null,
+    updated_at timestamptz not null default now()
+);
+
+create index if not exists wb_fbw_supply_goods_account_supply_idx
+    on {schema}.wb_fbw_supply_goods (account_id, supply_key);
+
+create index if not exists wb_fbw_supply_goods_account_nm_idx
+    on {schema}.wb_fbw_supply_goods (account_id, nm_id);
+
+create table if not exists {schema}.wb_fbw_supply_packages (
+    id bigserial primary key,
+    account_id bigint not null references {schema}.wb_accounts(id) on delete cascade,
+    supply_key text not null,
+    supply_id bigint null,
+    package_code text not null,
+    quantity integer null,
+    raw_payload jsonb not null,
+    updated_at timestamptz not null default now(),
+    unique (account_id, supply_key, package_code)
+);
+
+create table if not exists {schema}.wb_fbw_supply_package_barcodes (
+    id bigserial primary key,
+    account_id bigint not null references {schema}.wb_accounts(id) on delete cascade,
+    supply_key text not null,
+    supply_id bigint null,
+    package_code text not null,
+    barcode text not null,
+    quantity integer null,
+    raw_payload jsonb not null,
+    updated_at timestamptz not null default now(),
+    unique (account_id, supply_key, package_code, barcode)
+);
+
+create index if not exists wb_fbw_supply_package_barcodes_account_supply_idx
+    on {schema}.wb_fbw_supply_package_barcodes (account_id, supply_key);
+"""
+
+
 def _finance_sales_report_weekly_enriched_view_sql(schema: str, view_name: str, table_name: str) -> str:
     sale_operation = "\u041f\u0440\u043e\u0434\u0430\u0436\u0430"
     return_operation = "\u0412\u043e\u0437\u0432\u0440\u0430\u0442"
@@ -1127,7 +1251,7 @@ order by s.source_id, s.observed_at desc, s.id desc;
 
 
 def build_schema_sql(schema: str) -> str:
-    finance_api_types = "'orders', 'sales', 'finance_sales_report_details', 'finance_sales_report_weekly', 'warehouse_remains'"
+    finance_api_types = "'orders', 'sales', 'finance_sales_report_details', 'finance_sales_report_weekly', 'warehouse_remains', 'fbw_supplies'"
     return f"""
 create schema if not exists {schema};
 
@@ -1335,6 +1459,8 @@ create index if not exists wb_warehouse_remains_account_snapshot_idx
 
 create index if not exists wb_warehouse_remains_account_nm_idx
     on {schema}.wb_warehouse_remains (account_id, nm_id, warehouse_name);
+
+{_fbw_supplies_schema_sql(schema)}
 
 {_finance_raw_table_sql(schema, "wb_finance_sales_report_details")}
 

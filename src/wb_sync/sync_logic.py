@@ -57,6 +57,47 @@ class WarehouseRemainsFetcher(Protocol):
     ) -> list[dict[str, object]] | None: ...
 
 
+class FbwSuppliesListFetcher(Protocol):
+    def __call__(
+        self,
+        token: str,
+        date_from: str,
+        date_to: str,
+        stop_event: object,
+        limit: int = 1000,
+    ) -> list[dict[str, object]]: ...
+
+
+class FbwSupplyDetailsFetcher(Protocol):
+    def __call__(
+        self,
+        token: str,
+        supply_id: int,
+        is_preorder_id: bool,
+        stop_event: object,
+    ) -> dict[str, object] | None: ...
+
+
+class FbwSupplyGoodsFetcher(Protocol):
+    def __call__(
+        self,
+        token: str,
+        supply_id: int,
+        is_preorder_id: bool,
+        stop_event: object,
+        limit: int = 1000,
+    ) -> list[dict[str, object]]: ...
+
+
+class FbwSupplyPackageFetcher(Protocol):
+    def __call__(
+        self,
+        token: str,
+        supply_id: int,
+        stop_event: object,
+    ) -> list[dict[str, object]]: ...
+
+
 class ProgressCheckpoint(Protocol):
     def __call__(self, cursor_timestamp: datetime | None, cursor_key: str | None) -> None: ...
 
@@ -225,6 +266,66 @@ def run_warehouse_remains_sync(
     return SyncResult(
         rows_written=rows_written,
         cursor_timestamp=datetime.now(UTC),
+        cursor_key=None,
+        status="success" if rows_written else "noop",
+    )
+
+
+def _fbw_supply_identity(row: dict[str, object]) -> tuple[int | None, bool] | None:
+    supply_id = row.get("supplyID")
+    if supply_id is not None:
+        return int(supply_id), False
+    preorder_id = row.get("preorderID")
+    if preorder_id is not None:
+        return int(preorder_id), True
+    return None
+
+
+def run_fbw_supplies_sync(
+    worker: WorkerConfig,
+    stop_event: object,
+    fetch_supplies: FbwSuppliesListFetcher,
+    fetch_details: FbwSupplyDetailsFetcher,
+    fetch_goods: FbwSupplyGoodsFetcher,
+    fetch_package: FbwSupplyPackageFetcher,
+    write_rows: Writer,
+) -> SyncResult:
+    token = resolve_token(worker.token_env_var)
+    today_msk = moscow_now().date()
+    period_start = today_msk - timedelta(days=worker.lookback_days)
+    date_from = period_start.isoformat()
+    date_to = today_msk.isoformat()
+    supplies = fetch_supplies(token, date_from, date_to, stop_event, limit=min(worker.batch_limit, 1000))
+
+    payloads: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    for supply in supplies:
+        identity = _fbw_supply_identity(supply)
+        if identity is None:
+            continue
+        supply_id, is_preorder_id = identity
+        supply_key = f"preorder:{supply_id}" if is_preorder_id else f"supply:{supply_id}"
+        if supply_key in seen_keys:
+            continue
+        seen_keys.add(supply_key)
+
+        details = fetch_details(token, supply_id, is_preorder_id, stop_event) or {}
+        goods = fetch_goods(token, supply_id, is_preorder_id, stop_event, limit=min(worker.batch_limit, 1000))
+        packages = [] if is_preorder_id else fetch_package(token, supply_id, stop_event)
+        payloads.append(
+            {
+                "supply": supply,
+                "details": details,
+                "goods": goods,
+                "packages": packages,
+            }
+        )
+
+    rows_written = write_rows(worker.account_id, payloads)
+    period_end = datetime(today_msk.year, today_msk.month, today_msk.day, tzinfo=MOSCOW_TZ) + timedelta(days=1) - timedelta(seconds=1)
+    return SyncResult(
+        rows_written=rows_written,
+        cursor_timestamp=period_end.astimezone(UTC),
         cursor_key=None,
         status="success" if rows_written else "noop",
     )

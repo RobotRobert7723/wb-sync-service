@@ -26,6 +26,12 @@ def _none_if_empty(value: object) -> object | None:
     return value
 
 
+def _to_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
 class SyncRepository:
     def __init__(self, db: Database):
         self.db = db
@@ -312,6 +318,274 @@ class SyncRepository:
                 cur.executemany(insert_sql, [tuple(record[col] for col in columns) for record in records])
             conn.commit()
         return len(records)
+
+    def upsert_fbw_supplies(self, account_id: int, rows: Iterable[dict[str, object]]) -> int:
+        payloads = list(rows)
+        supply_records: list[dict[str, object]] = []
+        detail_records: list[dict[str, object]] = []
+        goods_records: list[dict[str, object]] = []
+        package_records: list[dict[str, object]] = []
+        package_barcode_records: list[dict[str, object]] = []
+        supply_keys: list[str] = []
+
+        for payload in payloads:
+            supply = payload.get("supply") if isinstance(payload, dict) else None
+            if not isinstance(supply, dict):
+                continue
+            identity = self._fbw_supply_identity(supply)
+            if identity is None:
+                continue
+            supply_key, supply_id, preorder_id = identity
+            supply_keys.append(supply_key)
+            supply_records.append(self._normalize_fbw_supply(account_id, supply_key, supply_id, preorder_id, supply))
+
+            details = payload.get("details")
+            if isinstance(details, dict) and details:
+                detail_records.append(self._normalize_fbw_supply_detail(account_id, supply_key, supply_id, preorder_id, details))
+
+            goods = payload.get("goods")
+            if isinstance(goods, list):
+                goods_records.extend(
+                    self._normalize_fbw_supply_good(account_id, supply_key, supply_id, preorder_id, good)
+                    for good in goods
+                    if isinstance(good, dict)
+                )
+
+            packages = payload.get("packages")
+            if isinstance(packages, list):
+                for package in packages:
+                    if not isinstance(package, dict):
+                        continue
+                    package_record = self._normalize_fbw_supply_package(account_id, supply_key, supply_id, package)
+                    if package_record is None:
+                        continue
+                    package_records.append(package_record)
+                    package_code = str(package_record["package_code"])
+                    barcodes = package.get("barcodes")
+                    if isinstance(barcodes, list):
+                        package_barcode_records.extend(
+                            self._normalize_fbw_supply_package_barcode(
+                                account_id,
+                                supply_key,
+                                supply_id,
+                                package_code,
+                                barcode,
+                            )
+                            for barcode in barcodes
+                            if isinstance(barcode, dict) and barcode.get("barcode")
+                        )
+
+        unique_supply_keys = sorted(set(supply_keys))
+        with self.db.connect() as conn, conn.cursor() as cur:
+            self._upsert_records(cur, "wb_fbw_supplies", supply_records, {"account_id", "supply_key"})
+            self._upsert_records(cur, "wb_fbw_supply_details", detail_records, {"account_id", "supply_key"})
+            if unique_supply_keys:
+                cur.execute(
+                    "delete from wb_fbw_supply_package_barcodes where account_id = %s and supply_key = any(%s)",
+                    (account_id, unique_supply_keys),
+                )
+                cur.execute(
+                    "delete from wb_fbw_supply_packages where account_id = %s and supply_key = any(%s)",
+                    (account_id, unique_supply_keys),
+                )
+                cur.execute(
+                    "delete from wb_fbw_supply_goods where account_id = %s and supply_key = any(%s)",
+                    (account_id, unique_supply_keys),
+                )
+            self._insert_records(cur, "wb_fbw_supply_goods", goods_records)
+            self._upsert_records(cur, "wb_fbw_supply_packages", package_records, {"account_id", "supply_key", "package_code"})
+            self._upsert_records(
+                cur,
+                "wb_fbw_supply_package_barcodes",
+                package_barcode_records,
+                {"account_id", "supply_key", "package_code", "barcode"},
+            )
+            conn.commit()
+        return len(supply_records) + len(detail_records) + len(goods_records) + len(package_records) + len(package_barcode_records)
+
+    def _insert_records(self, cur, table_name: str, records: list[dict[str, object]]) -> None:
+        if not records:
+            return
+        columns = list(records[0].keys())
+        insert_sql = sql.SQL(
+            """
+            insert into {table_name} ({fields})
+            values ({values})
+            """
+        ).format(
+            table_name=sql.Identifier(table_name),
+            fields=sql.SQL(", ").join(map(sql.Identifier, columns)),
+            values=sql.SQL(", ").join(sql.Placeholder() for _ in columns),
+        )
+        cur.executemany(insert_sql, [tuple(record[col] for col in columns) for record in records])
+
+    def _upsert_records(self, cur, table_name: str, records: list[dict[str, object]], conflict_columns: set[str]) -> None:
+        if not records:
+            return
+        columns = list(records[0].keys())
+        insert_sql = sql.SQL(
+            """
+            insert into {table_name} ({fields})
+            values ({values})
+            on conflict ({conflict_fields}) do update set
+            {updates}
+            """
+        ).format(
+            table_name=sql.Identifier(table_name),
+            fields=sql.SQL(", ").join(map(sql.Identifier, columns)),
+            values=sql.SQL(", ").join(sql.Placeholder() for _ in columns),
+            conflict_fields=sql.SQL(", ").join(sql.Identifier(col) for col in columns if col in conflict_columns),
+            updates=sql.SQL(", ").join(
+                sql.SQL("{} = excluded.{}").format(sql.Identifier(col), sql.Identifier(col))
+                for col in columns
+                if col not in conflict_columns
+            ),
+        )
+        cur.executemany(insert_sql, [tuple(record[col] for col in columns) for record in records])
+
+    def _fbw_supply_identity(self, row: dict[str, object]) -> tuple[str, int | None, int | None] | None:
+        supply_id = _to_int(row.get("supplyID"))
+        preorder_id = _to_int(row.get("preorderID"))
+        if supply_id is not None:
+            return f"supply:{supply_id}", supply_id, preorder_id
+        if preorder_id is not None:
+            return f"preorder:{preorder_id}", None, preorder_id
+        return None
+
+    def _normalize_fbw_supply(
+        self,
+        account_id: int,
+        supply_key: str,
+        supply_id: int | None,
+        preorder_id: int | None,
+        row: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "account_id": account_id,
+            "supply_key": supply_key,
+            "supply_id": supply_id,
+            "preorder_id": preorder_id,
+            "phone": row.get("phone"),
+            "create_date": _none_if_empty(row.get("createDate")),
+            "supply_date": _none_if_empty(row.get("supplyDate")),
+            "fact_date": _none_if_empty(row.get("factDate")),
+            "updated_date": _none_if_empty(row.get("updatedDate")),
+            "status_id": _to_int(row.get("statusID")),
+            "box_type_id": _to_int(row.get("boxTypeID")),
+            "is_box_on_pallet": row.get("isBoxOnPallet"),
+            "raw_payload": Jsonb(json.loads(json.dumps(row, default=str))),
+            "updated_at": utcnow(),
+        }
+
+    def _normalize_fbw_supply_detail(
+        self,
+        account_id: int,
+        supply_key: str,
+        supply_id: int | None,
+        preorder_id: int | None,
+        row: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "account_id": account_id,
+            "supply_key": supply_key,
+            "supply_id": supply_id,
+            "preorder_id": preorder_id,
+            "phone": row.get("phone"),
+            "status_id": _to_int(row.get("statusID")),
+            "box_type_id": _to_int(row.get("boxTypeID")),
+            "create_date": _none_if_empty(row.get("createDate")),
+            "supply_date": _none_if_empty(row.get("supplyDate")),
+            "fact_date": _none_if_empty(row.get("factDate")),
+            "updated_date": _none_if_empty(row.get("updatedDate")),
+            "warehouse_id": _to_int(row.get("warehouseID")),
+            "warehouse_name": row.get("warehouseName"),
+            "actual_warehouse_id": _to_int(row.get("actualWarehouseID")),
+            "actual_warehouse_name": row.get("actualWarehouseName"),
+            "transit_warehouse_id": _to_int(row.get("transitWarehouseID")),
+            "transit_warehouse_name": row.get("transitWarehouseName"),
+            "acceptance_cost": _to_decimal(row.get("acceptanceCost")),
+            "paid_acceptance_coefficient": _to_decimal(row.get("paidAcceptanceCoefficient")),
+            "reject_reason": row.get("rejectReason"),
+            "supplier_assign_name": row.get("supplierAssignName"),
+            "storage_coef": row.get("storageCoef"),
+            "delivery_coef": row.get("deliveryCoef"),
+            "quantity": _to_int(row.get("quantity")),
+            "ready_for_sale_quantity": _to_int(row.get("readyForSaleQuantity")),
+            "accepted_quantity": _to_int(row.get("acceptedQuantity")),
+            "unloading_quantity": _to_int(row.get("unloadingQuantity")),
+            "depersonalized_quantity": _to_int(row.get("depersonalizedQuantity")),
+            "is_box_on_pallet": row.get("isBoxOnPallet"),
+            "raw_payload": Jsonb(json.loads(json.dumps(row, default=str))),
+            "updated_at": utcnow(),
+        }
+
+    def _normalize_fbw_supply_good(
+        self,
+        account_id: int,
+        supply_key: str,
+        supply_id: int | None,
+        preorder_id: int | None,
+        row: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "account_id": account_id,
+            "supply_key": supply_key,
+            "supply_id": supply_id,
+            "preorder_id": preorder_id,
+            "barcode": row.get("barcode"),
+            "vendor_code": row.get("vendorCode"),
+            "nm_id": _to_int(row.get("nmID")),
+            "need_kiz": row.get("needKiz"),
+            "tnved": row.get("tnved"),
+            "tech_size": row.get("techSize"),
+            "color": row.get("color"),
+            "supplier_box_amount": _to_int(row.get("supplierBoxAmount")),
+            "quantity": _to_int(row.get("quantity")),
+            "ready_for_sale_quantity": _to_int(row.get("readyForSaleQuantity")),
+            "unloading_quantity": _to_int(row.get("unloadingQuantity")),
+            "accepted_quantity": _to_int(row.get("acceptedQuantity")),
+            "raw_payload": Jsonb(json.loads(json.dumps(row, default=str))),
+            "updated_at": utcnow(),
+        }
+
+    def _normalize_fbw_supply_package(
+        self,
+        account_id: int,
+        supply_key: str,
+        supply_id: int | None,
+        row: dict[str, object],
+    ) -> dict[str, object] | None:
+        package_code = row.get("packageCode")
+        if not package_code:
+            return None
+        return {
+            "account_id": account_id,
+            "supply_key": supply_key,
+            "supply_id": supply_id,
+            "package_code": str(package_code),
+            "quantity": _to_int(row.get("quantity")),
+            "raw_payload": Jsonb(json.loads(json.dumps(row, default=str))),
+            "updated_at": utcnow(),
+        }
+
+    def _normalize_fbw_supply_package_barcode(
+        self,
+        account_id: int,
+        supply_key: str,
+        supply_id: int | None,
+        package_code: str,
+        row: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "account_id": account_id,
+            "supply_key": supply_key,
+            "supply_id": supply_id,
+            "package_code": package_code,
+            "barcode": str(row.get("barcode")),
+            "quantity": _to_int(row.get("quantity")),
+            "raw_payload": Jsonb(json.loads(json.dumps(row, default=str))),
+            "updated_at": utcnow(),
+        }
 
     def get_existing_weekly_report_ids(self, account_id: int, report_ids: Iterable[int]) -> set[int]:
         report_ids = [int(report_id) for report_id in report_ids]
