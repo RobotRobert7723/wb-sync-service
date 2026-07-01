@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
-
 from wb_sync.config import AppConfig
 from wb_sync.db import Database
 from wb_sync.dispatcher import Dispatcher, WorkerFactory
@@ -21,9 +19,9 @@ class DefaultWorkerFactory(WorkerFactory):
                 rate_limit_seconds=app_config.rate_limit_seconds,
             )
         )
-        self.rate_limiters: dict[tuple[int, str], AccountRateLimiter] = defaultdict(
-            lambda: AccountRateLimiter(app_config.rate_limit_seconds)
-        )
+        self.rate_limiters: dict[tuple[int, str], AccountRateLimiter] = {}
+        self.default_rate_limit_seconds = app_config.rate_limit_seconds
+        self.supplies_rate_limit_seconds = app_config.supplies_rate_limit_seconds
 
     def _rate_limiter_key(self, config) -> tuple[int, str]:
         if config.api_type in {"finance_sales_report_details", "finance_sales_report_weekly"}:
@@ -36,12 +34,25 @@ class DefaultWorkerFactory(WorkerFactory):
             api_group = "statistics"
         return (config.account_id, api_group)
 
+    def _rate_limit_seconds_for_group(self, api_group: str) -> int:
+        if api_group == "supplies":
+            return self.supplies_rate_limit_seconds
+        return self.default_rate_limit_seconds
+
+    def _rate_limiter_for(self, config) -> AccountRateLimiter:
+        key = self._rate_limiter_key(config)
+        rate_limiter = self.rate_limiters.get(key)
+        if rate_limiter is None:
+            rate_limiter = AccountRateLimiter(self._rate_limit_seconds_for_group(key[1]))
+            self.rate_limiters[key] = rate_limiter
+        return rate_limiter
+
     def build(self, config):
         return SyncWorker(
             worker_config=config,
             repository=self.repository,
             api_client=self.api_client,
-            rate_limiter=self.rate_limiters[self._rate_limiter_key(config)],
+            rate_limiter=self._rate_limiter_for(config),
         )
 
 

@@ -21,6 +21,7 @@ class AppConfig:
     retry_attempts: int = 5
     retry_base_seconds: int = 2
     rate_limit_seconds: int = 60
+    supplies_rate_limit_seconds: int = 2
     log_level: str = "INFO"
 
     @classmethod
@@ -34,6 +35,7 @@ class AppConfig:
             retry_attempts=_env_int("WB_SYNC_RETRY_ATTEMPTS", 5),
             retry_base_seconds=_env_int("WB_SYNC_RETRY_BASE_SECONDS", 2),
             rate_limit_seconds=_env_int("WB_SYNC_RATE_LIMIT_SECONDS", 60),
+            supplies_rate_limit_seconds=_env_int("WB_SYNC_SUPPLIES_RATE_LIMIT_SECONDS", 2),
             log_level=os.getenv("WB_SYNC_LOG_LEVEL", "INFO").upper(),
         )
 
